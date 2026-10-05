@@ -4,17 +4,23 @@
 
   const DB_NAME = 'personal-admin';
   const STORES = ['items', 'people', 'files', 'settings'];
+  // Files shared to the app from Android's Share menu wait here until the app picks them up.
+  const ALL_STORES = [...STORES, 'shared'];
   let dbPromise;
 
   function open() {
     if (!dbPromise) {
       dbPromise = new Promise((resolve, reject) => {
-        const req = indexedDB.open(DB_NAME, 1);
+        const req = indexedDB.open(DB_NAME, 2);
         req.onupgradeneeded = () => {
           const db = req.result;
-          for (const s of STORES) if (!db.objectStoreNames.contains(s)) db.createObjectStore(s, { keyPath: s === 'settings' ? 'key' : 'id' });
+          for (const s of ALL_STORES) if (!db.objectStoreNames.contains(s)) db.createObjectStore(s, { keyPath: s === 'settings' ? 'key' : 'id' });
         };
-        req.onsuccess = () => resolve(req.result);
+        req.onsuccess = () => {
+          // Let a newer version (e.g. an updated service worker) upgrade the database.
+          req.result.onversionchange = () => { req.result.close(); dbPromise = null; };
+          resolve(req.result);
+        };
         req.onerror = () => reject(req.error);
       });
     }

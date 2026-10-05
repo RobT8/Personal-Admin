@@ -13,6 +13,8 @@
   const DEFAULT_SETTINGS = { defaultOffsets: [30, 7, 1], currency: '£', notify: false, notified: [], lastBackup: '', theme: 'system' };
   const PERSON_COLOURS = ['#2F6FB3', '#C0573A', '#2E8A6B', '#7A4FB8', '#B8860B', '#C2407A', '#3B8C9E', '#5F6B7A'];
 
+  const isTouch = window.matchMedia('(pointer: coarse)').matches;
+
   const state = {
     items: [],
     people: [],
@@ -156,14 +158,16 @@
     const hour = new Date().getHours();
     const greet = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
 
-    let banners = '';
+    let banners = pwaBanners();
     if (!state.items.length) {
       banners += `<div class="card" style="margin-bottom:18px">
         <h2>👋 Welcome to your Personal Admin Assistant</h2>
         <p class="muted">Keep every policy, contract and regular payment in one place, with reminders before anything renews. Everything is stored <b>only in this browser on this device</b>.</p>
         <ol class="muted small" style="line-height:1.8">
           <li><a href="#/people">Add the people in your household</a> so you can tag whose phone, car or card each thing is.</li>
-          <li><b>Drag a renewal email, PDF or contract</b> anywhere onto this window, and the details are read for you.</li>
+          ${isTouch
+            ? '<li><b>Share a renewal PDF or email text to “Personal Admin”</b> from any app (or tap <i>Add from file</i>), and the details are read for you.</li>'
+            : '<li><b>Drag a renewal email, PDF or contract</b> anywhere onto this window, and the details are read for you.</li>'}
           <li>Or <a href="#" data-act="new-item">add something by hand</a>.</li>
         </ol>
         <div class="row"><button class="btn primary" data-act="new-item">＋ Add manually</button><a class="btn" href="#/inbox">📥 Add from a file</a><button class="btn" data-act="load-example">Try with example data</button></div>
@@ -348,8 +352,8 @@
           <div class="card"><h2>Cost</h2>${it.cost ? `
             <div class="keydates">
               <div class="keydate"><div class="l">${esc(freq?.label || 'Cost')}</div><div class="d" style="font-size:1.3rem">${money(it.cost)}</div></div>
-              <div class="keydate"><div class="l">Per month</div><div class="d">${money(C.monthlyCost(it).toFixed(2))}</div></div>
-              <div class="keydate"><div class="l">Per year</div><div class="d">${money(C.annualCost(it).toFixed(2))}</div></div>
+              ${it.frequency !== 'monthly' && it.frequency !== 'one_off' ? `<div class="keydate"><div class="l">Per month</div><div class="d">${money(C.monthlyCost(it).toFixed(2))}</div></div>` : ''}
+              ${it.frequency !== 'annually' && it.frequency !== 'one_off' ? `<div class="keydate"><div class="l">Per year</div><div class="d">${money(C.annualCost(it).toFixed(2))}</div></div>` : ''}
               ${prev ? `<div class="keydate"><div class="l">Previously</div><div class="d">${money(prev)}</div><div class="small ${change > 0 ? 'change-up' : 'change-down'}">${change > 0 ? '▲' : '▼'} ${Math.abs(change).toFixed(1)}%${change > 5 ? ' — worth shopping around?' : ''}</div></div>` : ''}
             </div>` : '<div class="muted">No cost recorded. <a href="#" data-act="edit" data-id="' + esc(it.id) + '">Add one</a>.</div>'}</div>
           <div class="card"><h2>Details</h2>${details.length ? `<dl class="kv">${details.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}</dl>` : '<div class="muted">No details yet.</div>'}
@@ -507,9 +511,10 @@
     return `<div class="page-head"><div><h1>Add from a file</h1><div class="muted">Drop emails, PDFs or documents. The details are read on this device and nothing is uploaded.</div></div></div>
       <div class="dropzone" data-dropitem="">
         <div class="big">📥</div>
-        <h2 style="margin:6px 0">Drag & drop here, or anywhere on the page</h2>
+        <h2 style="margin:6px 0">${isTouch ? 'Pick a file, or share one to this app' : 'Drag & drop here, or anywhere on the page'}</h2>
         <div class="muted small">Emails (.eml, .msg) · PDF · Word (.docx) · text/HTML · images · or drag highlighted text straight from your email</div>
-        <div class="row" style="justify-content:center;margin-top:14px"><label class="btn primary">Choose files<input type="file" multiple hidden data-act="pick-files" data-item=""></label></div>
+        <div class="row" style="justify-content:center;margin-top:14px"><label class="btn primary">Choose files<input type="file" multiple hidden data-act="pick-files" data-item=""></label>${isTouch ? '<label class="btn">📷 Photo of a letter<input type="file" accept="image/*" capture="environment" hidden data-act="pick-files" data-item=""></label>' : ''}</div>
+        ${isTouch ? '<p class="muted small" style="margin-top:12px">📤 <b>From Gmail or any app:</b> open the PDF attachment → Share → <b>Personal Admin</b>. For the email itself, select its text → Share → Personal Admin (or copy and paste below).<br>📷 Photos are saved with the item but not read, so type the key details in. Tip: Google Lens can copy the text from a letter, and you can paste it below.</p>' : ''}
       </div>
       <details class="card" style="margin-top:14px" ${state.pasteDraft ? 'open' : ''}><summary style="cursor:pointer;font-weight:600">✂️ Or paste the text of an email</summary>
         <textarea id="paste-text" style="margin-top:10px;min-height:140px" placeholder="Open the email, select all (Ctrl/Cmd + A), copy, and paste here…"></textarea>
@@ -584,7 +589,7 @@
       </div></div>`;
   }
 
-  async function addImport({ file, text, meta, fileName, targetId }) {
+  async function addImport({ file, text, meta, fileName, targetId, sharedId }) {
     toast('Reading…');
     let parsed;
     if (file) parsed = await P.readFile(file);
@@ -601,6 +606,7 @@
       result: res,
       imageUrl: parsed.kind === 'image' ? URL.createObjectURL(file) : '',
       targetId: '',
+      sharedId: sharedId || '',
     };
     imp.targetId = targetId ?? (findMatch(res)?.id || '');
     state.imports.unshift(imp);
@@ -620,6 +626,11 @@
     await Promise.all(jobs);
     if (route().name !== 'inbox') location.hash = '#/inbox'; else render();
     toast(jobs.length > 1 ? `Read ${jobs.length} items, so check and save each one` : 'Check the details and save');
+  }
+
+  // Once every import from a share is saved or discarded, forget the share.
+  async function releaseShare(imp) {
+    if (imp.sharedId && !state.imports.some((x) => x.sharedId === imp.sharedId)) await DB.del('shared', imp.sharedId).catch(() => {});
   }
 
   async function saveImport(form) {
@@ -646,6 +657,7 @@
     } else item.history.push({ date: C.today(), text: `Created from “${rec.name}”` });
     await saveItem(item);
     state.imports = state.imports.filter((x) => x.id !== imp.id);
+    await releaseShare(imp);
     if (imp.imageUrl) URL.revokeObjectURL(imp.imageUrl);
     toast(base ? 'Updated' : 'Saved');
     if (state.imports.length) render(); else location.hash = `#/item/${item.id}`;
@@ -685,7 +697,7 @@
   function viewSettings() {
     const s = state.settings;
     const notifState = !('Notification' in window) ? 'unsupported' : Notification.permission;
-    return `<div class="page-head"><div><h1>Settings</h1></div></div>
+    return `<div class="page-head"><div><h1>Settings</h1></div></div>${pwaBanners()}
       <div class="grid grid-2">
         <div class="card"><h2>🔔 Reminders</h2>
           <form id="settings-form" class="stack">
@@ -696,19 +708,19 @@
           </form>
           <hr style="border:0;border-top:1px solid var(--border);margin:18px 0">
           <h3>Pop-up notifications</h3>
-          <p class="muted small">While this page is open (a pinned tab works well), you'll get a desktop notification when a reminder falls due. To get alerts on your phone even when this is closed, <b>export to your calendar</b>.</p>
+          <p class="muted small">${served ? 'On Android with the app installed, Personal Admin checks for due reminders in the background about twice a day (Android decides exactly when), and every time you open it. For alerts at an exact time, also <b>export to your calendar</b>.' : "While this page is open (a pinned tab works well), you'll get a desktop notification when a reminder falls due. To get alerts on your phone even when this is closed, <b>export to your calendar</b>."}</p>
           <div class="row">${notifState === 'unsupported' ? '<span class="muted small">Not supported in this browser.</span>' : s.notify && notifState === 'granted' ? '<span class="pill green">On</span><button class="btn sm" data-act="notify-off">Turn off</button><button class="btn sm ghost" data-act="notify-test">Send a test</button>' : '<button class="btn" data-act="notify-on">Turn on notifications</button>'}
           <button class="btn" data-act="export-ics">📅 Export reminders to calendar (.ics)</button></div>
         </div>
         <div class="card"><h2>💾 Backup & restore</h2>
-          <p class="muted small">Your data is stored only in this browser on this computer. Clearing browsing data, or using a different browser, means starting empty. A backup file contains everything, documents included. Keep it somewhere safe (it holds personal details).</p>
-          <div class="row"><button class="btn primary" data-act="export-json">⬇︎ Download backup</button><label class="btn">⬆︎ Restore from backup<input type="file" accept=".json,application/json" hidden data-act="import-json"></label><button class="btn" data-act="export-csv">⬇︎ Spreadsheet (CSV)</button></div>
+          <p class="muted small">Your data is stored only in this browser on this device. Clearing browsing data, or using a different browser, means starting empty. A backup file contains everything, documents included. Keep it somewhere safe (it holds personal details).</p>
+          <div class="row"><button class="btn primary" data-act="export-json">${isTouch ? '📤 Save backup (Drive, email…)' : '⬇︎ Download backup'}</button><label class="btn">⬆︎ Restore from backup<input type="file" accept=".json,application/json" hidden data-act="import-json"></label><button class="btn" data-act="export-csv">⬇︎ Spreadsheet (CSV)</button></div>
           <p class="small muted">${s.lastBackup ? `Last backup: ${esc(C.formatDate(s.lastBackup))}` : 'No backup made yet.'}</p>
           <div id="storage-info" class="small muted"></div>
         </div>
         <div class="card"><h2>🔒 Privacy</h2>
           <ul class="small" style="line-height:1.7;padding-left:18px">
-            <li>No accounts, no servers, no tracking. This page is <b>blocked from making any network connection</b> by its own security policy, so documents can't leave your device even by accident.</li>
+            <li>No accounts, no servers, no tracking. This page is <b>blocked from making any network connection</b> by its own security policy, so documents can't leave your device even by accident.${served ? ' The only thing ever downloaded is the app itself, when there is an update.' : ''}</li>
             <li>Documents are read on your computer: emails, PDFs and Word files are all parsed locally.</li>
             <li>Storage: your browser's private database for this file, on this device.</li>
             <li>Tip: don't store passwords or full card numbers here. Use a password manager for those.</li></ul>
@@ -740,10 +752,20 @@
     for (const f of state.files.values()) files.push({ ...f, blob: undefined, data: f.blob ? await blobToDataURL(f.blob) : '' });
     const { notified, ...settings } = state.settings;
     const data = { app: 'personal-admin', version: 1, exported: new Date().toISOString(), items: state.items, people: state.people, settings, files };
-    download(`personal-admin-backup-${C.today()}.json`, new Blob([JSON.stringify(data)], { type: 'application/json' }));
+    const name = `personal-admin-backup-${C.today()}.json`;
+    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    let shared = false;
+    if (isTouch && navigator.canShare) {
+      const file = new File([blob], name, { type: 'application/json' });
+      if (navigator.canShare({ files: [file] })) {
+        try { await navigator.share({ files: [file], title: 'Personal Admin backup' }); shared = true; }
+        catch (e) { if (e.name === 'AbortError') return; }
+      }
+    }
+    if (!shared) download(name, blob);
     state.settings.lastBackup = C.today();
     await saveSettings();
-    toast('Backup downloaded');
+    toast(shared ? 'Backup shared' : 'Backup downloaded');
     render();
   }
 
@@ -782,16 +804,19 @@
   }
 
   /* ---------- notifications ---------- */
+  // Android only allows notifications through a service worker; desktop file:// has none.
+  async function showNotification(title, opts) {
+    const reg = pwa.reg || (navigator.serviceWorker && location.protocol.startsWith('http') ? await navigator.serviceWorker.getRegistration() : null);
+    if (reg) return reg.showNotification(title, { icon: 'icon-192.png', badge: 'icon-192.png', ...opts });
+    const n = new Notification(title, opts);
+    n.onclick = () => { window.focus(); if (opts.data?.itemId) location.hash = `#/item/${opts.data.itemId}`; };
+  }
   async function checkNotifications() {
     if (!state.settings.notify || !('Notification' in window) || Notification.permission !== 'granted') return;
-    const due = reminders().filter((r) => !r.done && r.date <= C.today() && !state.settings.notified.includes(r.key + r.itemId));
-    for (const r of due.slice(0, 5)) {
-      const it = itemById(r.itemId);
-      const n = new Notification(`${C.category(it.category).icon} ${it.name}`, { body: `${r.title} (${C.formatDate(r.due)})`, tag: r.key + r.itemId });
-      n.onclick = () => { window.focus(); location.hash = `#/item/${it.id}`; };
-    }
-    if (due.length) {
-      state.settings.notified = [...state.settings.notified, ...due.map((r) => r.key + r.itemId)].slice(-500);
+    const { notifications, keys } = C.dueNotifications(state.items, state.settings, state.settings.notified);
+    for (const n of notifications) await showNotification(n.title, { body: n.body, tag: n.tag, data: { itemId: n.itemId } });
+    if (keys.length) {
+      state.settings.notified = [...state.settings.notified, ...keys].slice(-500);
       await DB.setSetting('notified', state.settings.notified);
     }
   }
@@ -927,7 +952,12 @@
       await addImport({ text, fileName: 'Pasted text' });
       render();
     },
-    'import-discard': (el) => { state.imports = state.imports.filter((x) => x.id !== el.dataset.id); render(); },
+    'import-discard': async (el) => {
+      const imp = state.imports.find((x) => x.id === el.dataset.id);
+      state.imports = state.imports.filter((x) => x.id !== el.dataset.id);
+      if (imp) await releaseShare(imp);
+      render();
+    },
     'use-date': (el) => {
       const form = $(`[data-import-form="${el.dataset.id}"]`);
       const inp = $('[name=endDate]', form);
@@ -951,9 +981,17 @@
       const perm = await Notification.requestPermission();
       if (perm !== 'granted') return toast('Notifications were blocked by the browser');
       state.settings.notify = true; await saveSettings(); toast('Notifications on'); render(); checkNotifications();
+      registerBackgroundCheck();
     },
     'notify-off': async () => { state.settings.notify = false; await saveSettings(); render(); },
-    'notify-test': () => new Notification('Personal Admin', { body: 'Notifications are working 👍' }),
+    'notify-test': () => showNotification('Personal Admin', { body: 'Notifications are working 👍' }),
+    'install-app': async () => {
+      if (!pwa.installPrompt) return;
+      pwa.installPrompt.prompt();
+      await pwa.installPrompt.userChoice.catch(() => {});
+      pwa.installPrompt = null; render();
+    },
+    'apply-update': () => { pwa.updating = true; pwa.reg?.waiting?.postMessage('skip-waiting'); },
     'load-example': loadExample,
     'clear-example': async () => {
       for (const it of state.items.filter((i) => i.example)) await DB.del('items', it.id);
@@ -962,7 +1000,7 @@
     },
     wipe: async () => {
       if (prompt('Type DELETE to permanently remove all your data from this browser.') !== 'DELETE') return;
-      for (const s of DB.STORES) await DB.clear(s);
+      for (const s of [...DB.STORES, 'shared']) await DB.clear(s);
       state.imports = [];
       await load(); toast('All data deleted'); location.hash = '#/dashboard'; render();
     },
@@ -1064,14 +1102,78 @@
     handleIncoming(ev.dataTransfer, r.name === 'item' ? r.id : '');
   });
 
+  /* ---------- installed phone app (PWA) ---------- */
+  const pwa = { reg: null, installPrompt: null, updateReady: false, updating: false };
+  const served = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+
+  function pwaBanners() {
+    let out = '';
+    if (pwa.updateReady) out += '<div class="banner info"><span>✨</span><span style="flex:1">A new version of Personal Admin is ready.</span><button class="btn sm primary" data-act="apply-update">Update now</button></div>';
+    if (pwa.installPrompt) out += '<div class="banner info"><span>📲</span><span style="flex:1">Install Personal Admin on this device. It opens like a normal app, works offline and appears in your Share menu.</span><button class="btn sm primary" data-act="install-app">Install</button></div>';
+    return out;
+  }
+
+  async function registerBackgroundCheck() {
+    try {
+      const reg = pwa.reg || (await navigator.serviceWorker?.ready);
+      if (!reg || !('periodicSync' in reg)) return;
+      const perm = await navigator.permissions.query({ name: 'periodic-background-sync' }).catch(() => null);
+      if (perm && perm.state !== 'granted') return;
+      await reg.periodicSync.register('reminders', { minInterval: 12 * 60 * 60 * 1000 });
+    } catch { /* not supported: reminders still fire whenever the app is opened */ }
+  }
+
+  // Files and text shared from other apps arrive via the service worker and wait in the 'shared'
+  // store until saved or discarded, so sharing another thing (which reloads the app) loses nothing.
+  let consuming = false;
+  const loadedShares = new Set();
+  async function consumeShared() {
+    if (consuming) return;
+    consuming = true;
+    try {
+      const rows = (await DB.getAll('shared')).filter((r) => !loadedShares.has(r.id));
+      if (!rows.length) return;
+      for (const row of rows.sort((a, b) => a.at - b.at)) {
+        loadedShares.add(row.id);
+        for (const f of row.files || []) {
+          const file = f.blob instanceof File ? f.blob : new File([f.blob], f.name, { type: f.type });
+          await addImport({ file, sharedId: row.id });
+        }
+        if (row.text && !(row.files || []).length) await addImport({ text: row.text, fileName: 'Shared text', sharedId: row.id });
+        if (!row.text && !(row.files || []).length) await DB.del('shared', row.id);
+      }
+      if (route().name !== 'inbox') location.hash = '#/inbox'; else render();
+      toast('Got it. Check the details and save');
+    } catch (e) {
+      toast(`Couldn't read the shared item (${e.message})`);
+    } finally { consuming = false; }
+  }
+
+  if (served && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      pwa.reg = reg;
+      const watch = (w) => w && w.addEventListener('statechange', () => {
+        if (w.state === 'installed' && navigator.serviceWorker.controller) { pwa.updateReady = true; render(); }
+      });
+      if (reg.waiting && navigator.serviceWorker.controller) { pwa.updateReady = true; render(); }
+      watch(reg.installing);
+      reg.addEventListener('updatefound', () => watch(reg.installing));
+      if (state.settings.notify) registerBackgroundCheck();
+    }).catch(() => {});
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (pwa.updating) location.reload(); });
+  }
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); pwa.installPrompt = e; render(); });
+  window.addEventListener('appinstalled', () => { pwa.installPrompt = null; toast('Installed. Find Personal Admin on your home screen'); render(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { consumeShared(); checkNotifications(); } });
+
   /* ---------- start ---------- */
   window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); if (route().name === 'settings') storageInfo(); });
   load()
-    .then(() => { render(); if (route().name === 'settings') storageInfo(); checkNotifications(); setInterval(checkNotifications, 30 * 60 * 1000); })
+    .then(() => { render(); if (route().name === 'settings') storageInfo(); consumeShared(); checkNotifications(); setInterval(checkNotifications, 30 * 60 * 1000); })
     .catch((e) => {
       $('#view').innerHTML = `<div class="card"><h2>Storage isn't available</h2><p>This browser blocked local storage for this page (${esc(e && e.message)}). Try opening the file in Chrome, Edge or Firefox, and make sure you're not in a private window.</p></div>`;
     });
 
   // test hook
-  window.__PA = { state, render, handleIncoming, addImport };
+  window.__PA = { state, render, handleIncoming, addImport, consumeShared, pwa };
 })();

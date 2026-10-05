@@ -99,3 +99,13 @@ test('costs and calendar export', () => {
   assert.match(ics, /DTSTART;VALUE=DATE:20270314/);
   assert.ok(ics.includes(String.raw`SUMMARY:Car\, renewal\; soon`));
 });
+
+test('notifications: one per item, capped with a summary', () => {
+  const past = C.addDays(C.today(), -1);
+  const items = [1, 2, 3, 4, 5].map((n) => C.newItem({ id: `i${n}`, name: `Thing ${n}`, endDate: past, noticeDays: 30 }));
+  const { notifications, keys } = C.dueNotifications(items, { defaultOffsets: [30, 7, 1] }, []);
+  assert.equal(notifications.length, 4); // 3 items + summary
+  assert.match(notifications[3].body, /2 more things/);
+  assert.equal(keys.length, 20); // 5 items × (3 offsets + notice)
+  assert.equal(C.dueNotifications(items, { defaultOffsets: [30, 7, 1] }, keys).notifications.length, 0);
+});

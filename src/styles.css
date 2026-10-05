@@ -224,3 +224,16 @@ label.f.hi-low input, label.f.hi-low select { background: var(--red-bg); border-
   .attn .t { flex-basis: calc(100% - 50px); }
   .attn .btn:first-of-type { margin-left: 46px; }
 }
+@media (max-width: 760px) {
+  .preview { max-height: 240px; }
+  .modal-back { padding: 0; }
+  .modal { border-radius: 0; min-height: 100vh; padding: 16px 16px 90px; }
+  .btn { min-height: 40px; }
+  input, select, textarea { font-size: 16px; } /* stops Android/iOS zooming into fields */
+  .page-head h1 { font-size: 1.35rem; }
+}
+/* Installed app: respect the status bar / gesture area */
+@media (display-mode: standalone) {
+  body { padding-top: env(safe-area-inset-top); }
+  .nav { padding-bottom: max(4px, env(safe-area-inset-bottom)); }
+}

@@ -242,6 +242,22 @@
     return items.flatMap((i) => itemReminders(i, settings)).sort((a, b) => a.date.localeCompare(b.date));
   }
 
+  /* What to notify about now: one notification per item (its latest due reminder),
+     at most `max`, then a single summary. `keys` are what to remember as notified. */
+  function dueNotifications(items, settings, notified, max = 3) {
+    const seen = new Set(notified || []);
+    const due = allReminders(items, settings).filter((r) => !r.done && r.date <= today() && !seen.has(r.key + r.itemId));
+    const byItem = new Map();
+    for (const r of due) byItem.set(r.itemId, r); // sorted by date, so the latest wins
+    const list = [...byItem.values()].map((r) => {
+      const it = items.find((i) => i.id === r.itemId);
+      return { title: `${category(it.category).icon} ${it.name}`, body: `${r.title} (${formatDate(r.due)})`, tag: `pa-${it.id}`, itemId: it.id };
+    });
+    const out = list.slice(0, max);
+    if (list.length > max) out.push({ title: 'Personal Admin', body: `…and ${list.length - max} more thing${list.length - max === 1 ? '' : 's'} need attention`, tag: 'pa-summary', itemId: '' });
+    return { notifications: out, keys: due.map((r) => r.key + r.itemId) };
+  }
+
   /* Suggested next end date when the user marks something as renewed. */
   function nextTermEnd(item) {
     const base = item.endDate || today();
@@ -320,6 +336,6 @@
     GROUPS, CATEGORIES, FIELDS, FREQUENCIES, PAYMENT_METHODS,
     category, group, toISO, parseISO, today, addDays, addMonths, daysBetween, formatDate, relative,
     annualCost, monthlyCost, formatMoney, uid, newItem, parseOffsets, itemReminders, allReminders,
-    nextTermEnd, buildICS, reminderEvents,
+    nextTermEnd, buildICS, reminderEvents, dueNotifications,
   };
 })(globalThis);

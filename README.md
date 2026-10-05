@@ -4,19 +4,44 @@ One place for every insurance policy, contract and regular payment: mobile phone
 licence, council tax, cars, credit cards and the rest. It reminds you before anything renews,
 and you can drop in emails and documents to have the details read automatically.
 
-**It's local-only.** It's a single HTML file that runs in your browser. Your data is stored in
-that browser on your device, and the page's security policy stops it making *any* network
-connection.
+**It's local-only.** Your data is stored in the browser on your device, and the page's
+security policy stops it making *any* network connection. Use it as an installed app on your
+Android phone, or as a single file on your computer.
 
 ## Using it
 
-1. Download **[`PersonalAdmin.html`](PersonalAdmin.html)** and save it somewhere permanent
-   (e.g. `Documents/PersonalAdmin.html`).
-2. Double-click it to open it in **Chrome, Edge or Firefox**. Bookmark it or pin the tab.
-3. Add the people in your household (**People**), then drag in renewal emails, PDFs and contracts.
+### 📱 On your Android phone (installed app)
 
-> Always open the same file in the same browser. The data belongs to that browser profile, so
-> use **Settings → Download backup** now and then (the dashboard nudges you every 30 days).
+1. Open **https://robt8.github.io/personal-admin/** in Chrome.
+2. Tap **Install** on the banner (or ⋮ menu → **Install app**). It now sits on your home screen,
+   opens full-screen and works offline.
+3. In **Settings**, tap **Turn on notifications** to get reminders.
+
+Once installed, **Personal Admin appears in Android's Share menu**:
+
+| You have… | Do this |
+|---|---|
+| A PDF attachment in Gmail | Open it → **Share** → **Personal Admin** |
+| The email itself | Select its text → **Share** → **Personal Admin** (or copy, then paste in *Add from file*) |
+| A paper letter | *Add from file* → **📷 Photo of a letter**. The photo is kept with the item, but it isn't read, so type the key details yourself. Or use Google Lens → *Copy text* → paste |
+| A file in Drive / Downloads | *Add from file* → **Choose files** |
+
+**Reminders on the phone:** the app checks for due reminders whenever you open it, and in the
+background about twice a day (Android decides exactly when). For an alert at an exact time,
+use **Calendar → Export (.ics)** too.
+
+**Your data stays on the phone.** The website only delivers the app itself; everything you
+enter is stored in Chrome on your phone and is never uploaded. Use **Settings → Save backup**
+now and then, which lets you save a backup file to Google Drive or email it to yourself. If you
+uninstall the app or clear Chrome's data, restore from that file.
+
+### 💻 On a computer
+
+1. Download **[`PersonalAdmin.html`](PersonalAdmin.html)** and save it somewhere permanent.
+2. Double-click it to open it in **Chrome, Edge or Firefox**. Drag emails and documents onto it.
+
+The phone and the computer keep **separate** data. To move it, use a backup file
+(*Save backup* on one device, *Restore from backup* on the other).
 
 ## How the "drop a document" flow works
 
@@ -66,9 +91,15 @@ PDFs attached to a `.eml` are read automatically. Images are attached, but they 
 
 ```bash
 npm test        # extraction + reminder unit tests (Node's built-in runner, no installs)
-npm run build   # bundles src/ + vendor/ into PersonalAdmin.html
+npm run build   # → PersonalAdmin.html (desktop) and site/ (phone app)
+npx http-server site   # try the phone app locally at http://localhost:8080
 ```
 
+Every push to `main` runs `.github/workflows/pages.yml`, which tests, builds and publishes
+`site/` to GitHub Pages. The service worker (`src/sw.js`) caches the app for offline use,
+receives Android shares (`share_target` in `src/manifest.webmanifest`) and checks reminders
+in the background. A new deploy shows an **Update now** banner in the app.
+
 `src/` holds the source (`core.js` data model, `extract.js` text→fields, `parsers.js`
-file→text, `db.js` IndexedDB, `app.js` UI). `vendor/` is pdf.js 3.11 (Apache-2.0). Rebuild
-and commit `PersonalAdmin.html` after changing anything in `src/`.
+file→text, `db.js` IndexedDB, `app.js` UI, `sw.js` + `manifest.webmanifest` for the phone app). `vendor/` is pdf.js 3.11 (Apache-2.0). Rebuild
+and commit `PersonalAdmin.html` after changing anything in `src/` (`site/` is built by CI).
