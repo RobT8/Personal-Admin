@@ -1,0 +1,11 @@
+{
+  "name": "personal-admin",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Local-only tracker for insurances, contracts, bills and renewals.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}

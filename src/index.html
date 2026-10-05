@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Local-only guarantee: this page may not make ANY network request. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'self' blob:; style-src 'unsafe-inline' 'self'; img-src 'self' data: blob:; worker-src blob:; frame-src blob:; object-src blob:; connect-src blob: data:; font-src data:; base-uri 'none'; form-action 'none'">
+  <title>Personal Admin</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232F6FB3'/%3E%3Cpath d='M18 16h20l8 8v24H18z' fill='white'/%3E%3Cpath d='M24 32h16M24 39h12' stroke='%232F6FB3' stroke-width='3'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <nav class="nav" aria-label="Main">
+      <div class="brand"><span class="brand-mark">PA</span><span class="brand-text">Personal Admin</span></div>
+      <a href="#/dashboard" data-route="dashboard"><span class="ni">🏠</span><span>Dashboard</span></a>
+      <a href="#/items" data-route="items"><span class="ni">🗂️</span><span>Everything</span></a>
+      <a href="#/calendar" data-route="calendar"><span class="ni">📅</span><span>Calendar</span></a>
+      <a href="#/inbox" data-route="inbox"><span class="ni">📥</span><span>Add from file</span><span class="badge" id="inbox-count" hidden></span></a>
+      <a href="#/people" data-route="people"><span class="ni">👪</span><span>People</span></a>
+      <a href="#/settings" data-route="settings"><span class="ni">⚙️</span><span>Settings</span></a>
+      <div class="nav-foot">🔒 Stored only on this device</div>
+    </nav>
+    <main id="view" tabindex="-1"></main>
+  </div>
+  <div id="modal-root"></div>
+  <div id="drop-overlay" hidden><div>📄 Drop to read the details</div></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="../vendor/pdf.min.js"></script>
+  <script src="../vendor/pdf.worker.min.js"></script>
+  <script src="core.js"></script>
+  <script src="extract.js"></script>
+  <script src="parsers.js"></script>
+  <script src="db.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
