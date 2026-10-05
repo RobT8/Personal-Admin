@@ -43,6 +43,43 @@ uninstall the app or clear Chrome's data, restore from that file.
 The phone and the computer keep **separate** data. To move it, use a backup file
 (*Save backup* on one device, *Restore from backup* on the other).
 
+## Keeping it private and safe
+
+The repo (and the GitHub Pages site) only holds the **app's code**. **Your data is never in
+the repo and is never uploaded.** It lives in the browser storage on your phone or computer.
+
+```
+GitHub (public): the app's code ──download once──▶ your phone: the app + your data (encrypted)
+                                 ◀──── ✗ nothing ever sent back ────
+```
+
+### 🔐 App lock (Settings → App lock)
+
+Turn this on and everything you save (items, people and documents) is **encrypted with
+AES-256** using a passphrase only you know. Without it the data is unreadable, even to someone
+holding your unlocked phone or to another website on the same address.
+
+- The passphrase is stretched with PBKDF2-SHA256 (600,000 rounds). That makes guessing slow,
+  and it's never stored.
+- The app **locks itself** after 5 minutes away or idle (you can change this), and you can tap 🔒
+  any time.
+- Background reminders still work while locked, but they only say *"You have 3 reminders
+  due"*. The details stay encrypted until you unlock.
+- ⚠️ **Forget the passphrase and the data can't be recovered.** That's the point. Keep a backup.
+
+### 💾 Password-protected backups
+
+**Settings → Save backup** asks for a password and encrypts the whole file, documents
+included. Restoring asks for the same password. You *can* make an unprotected backup, but
+the app warns you. A CSV spreadsheet export is never encrypted.
+
+### Also do this
+
+- Keep a **screen lock** on your phone.
+- Turn on **two-factor authentication** for your GitHub account, so nobody else can change the
+  app's code.
+- Don't store passwords or full card numbers here. Use a password manager for those.
+
 ## How the "drop a document" flow works
 
 ```mermaid
@@ -101,5 +138,5 @@ receives Android shares (`share_target` in `src/manifest.webmanifest`) and check
 in the background. A new deploy shows an **Update now** banner in the app.
 
 `src/` holds the source (`core.js` data model, `extract.js` text→fields, `parsers.js`
-file→text, `db.js` IndexedDB, `app.js` UI, `sw.js` + `manifest.webmanifest` for the phone app). `vendor/` is pdf.js 3.11 (Apache-2.0). Rebuild
+file→text, `db.js` IndexedDB, `vault.js` encryption, `app.js` UI, `sw.js` + `manifest.webmanifest` for the phone app). `vendor/` is pdf.js 3.11 (Apache-2.0). Rebuild
 and commit `PersonalAdmin.html` after changing anything in `src/` (`site/` is built by CI).

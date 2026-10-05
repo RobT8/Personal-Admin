@@ -237,3 +237,18 @@ label.f.hi-low input, label.f.hi-low select { background: var(--red-bg); border-
   body { padding-top: env(safe-area-inset-top); }
   .nav { padding-bottom: max(4px, env(safe-area-inset-bottom)); }
 }
+
+/* App lock */
+body.locked .nav { display: none; }
+body.locked main { max-width: none; }
+.lock-screen { min-height: 80vh; display: grid; place-items: center; }
+.lock-card { width: 100%; max-width: 380px; text-align: center; padding: 30px 24px; }
+.lock-card h1 { font-size: 1.3rem; margin: 8px 0; }
+.lock-icon { font-size: 3rem; }
+.lock-card input { text-align: center; font-size: 1.1rem; padding: 12px; }
+.meter { display: inline-flex; gap: 3px; vertical-align: middle; }
+.meter i { width: 22px; height: 6px; border-radius: 3px; background: var(--border); }
+.meter.m1 i:nth-child(-n+1) { background: var(--red); }
+.meter.m2 i:nth-child(-n+2) { background: var(--amber); }
+.meter.m3 i:nth-child(-n+3), .meter.m4 i { background: var(--green); }
+@media (max-width: 760px) { .nav-lock { display: none !important; } }

@@ -92,6 +92,20 @@ self.addEventListener('periodicsync', (e) => {
 async function checkReminders() {
   const notify = await PADB.getSetting('notify', false);
   if (!notify) return;
+  // With the app lock on, the data is encrypted and this worker has no key: it only sees a
+  // list of reminder dates, so it can say how many are due but not what they are.
+  if (await PADB.getSetting('vault', null)) {
+    const schedule = (await PADB.getSetting('schedule', null)) || [];
+    const seen = await PADB.getSetting('notified', []);
+    const due = schedule.filter((r) => r.d <= PACore.today() && !seen.includes(r.k));
+    if (!due.length) return;
+    await self.registration.showNotification('🔔 Personal Admin', {
+      body: `You have ${due.length} reminder${due.length === 1 ? '' : 's'} due. Unlock the app to see ${due.length === 1 ? 'it' : 'them'}.`,
+      tag: 'pa-locked', icon: 'icon-192.png', badge: 'icon-192.png', data: {},
+    });
+    await PADB.setSetting('notified', [...seen, ...due.map((r) => r.k)].slice(-500));
+    return;
+  }
   const items = await PADB.getAll('items');
   const defaultOffsets = await PADB.getSetting('defaultOffsets', [30, 7, 1]);
   const notified = await PADB.getSetting('notified', []);

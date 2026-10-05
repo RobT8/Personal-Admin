@@ -3,14 +3,14 @@
 (function () {
   'use strict';
 
-  const C = window.PACore, X = window.PAExtract, P = window.PAParsers, DB = window.PADB;
+  const C = window.PACore, X = window.PAExtract, P = window.PAParsers, DB = window.PADB, V = window.PAVault;
 
   if (window.pdfjsLib && window.pdfjsWorker) {
     // The worker code is already loaded on the page, so pdf.js runs in-thread — no worker file to fetch.
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'about:blank';
   }
 
-  const DEFAULT_SETTINGS = { defaultOffsets: [30, 7, 1], currency: '£', notify: false, notified: [], lastBackup: '', theme: 'system' };
+  const DEFAULT_SETTINGS = { defaultOffsets: [30, 7, 1], currency: '£', notify: false, notified: [], lastBackup: '', theme: 'system', autoLockMinutes: 5 };
   const PERSON_COLOURS = ['#2F6FB3', '#C0573A', '#2E8A6B', '#7A4FB8', '#B8860B', '#C2407A', '#3B8C9E', '#5F6B7A'];
 
   const isTouch = window.matchMedia('(pointer: coarse)').matches;
@@ -81,6 +81,7 @@
     const i = state.items.findIndex((x) => x.id === item.id);
     if (i >= 0) state.items[i] = item; else state.items.push(item);
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+    updateSchedule();
   }
   async function saveSettings() {
     for (const [k, v] of Object.entries(state.settings)) await DB.setSetting(k, v);
@@ -95,13 +96,19 @@
     state.files.set(rec.id, rec);
   }
 
+  async function loadSettings() {
+    for (const k of Object.keys(DEFAULT_SETTINGS)) state.settings[k] = await DB.getSetting(k, DEFAULT_SETTINGS[k]);
+    applyTheme();
+  }
+
   async function load() {
+    await loadSettings();
+    if (isLocked()) return;
     const [items, people, files] = await Promise.all([DB.getAll('items'), DB.getAll('people'), DB.getAll('files')]);
     state.items = items;
     state.people = people.sort((a, b) => a.name.localeCompare(b.name));
     state.files = new Map(files.map((f) => [f.id, f]));
-    for (const k of Object.keys(DEFAULT_SETTINGS)) state.settings[k] = await DB.getSetting(k, DEFAULT_SETTINGS[k]);
-    applyTheme();
+    updateSchedule();
   }
 
   function applyTheme() {
@@ -126,6 +133,9 @@
   }
 
   function render() {
+    document.body.classList.toggle('locked', isLocked());
+    if (isLocked()) { $('#view').innerHTML = lockScreenHTML(); setTimeout(() => $('#unlock-pass')?.focus(), 0); return; }
+    $('#nav-lock').hidden = !lock.record;
     const r = route();
     $$('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === (r.name === 'item' ? 'items' : r.name)));
     const badge = $('#inbox-count');
@@ -195,7 +205,7 @@
 
     return `
       <div class="page-head"><div><h1>${greet}</h1><div class="muted">${esc(C.formatDate(today))} · ${act.length} active item${act.length === 1 ? '' : 's'}</div></div>
-        <div class="row"><a class="btn" href="#/inbox">📥 Add from file</a><button class="btn primary" data-act="new-item">＋ Add</button></div></div>
+        <div class="row">${lock.record ? '<button class="btn" data-act="lock-now" title="Lock now" aria-label="Lock now">🔒</button>' : ''}<a class="btn" href="#/inbox">📥 Add from file</a><button class="btn primary" data-act="new-item">＋ Add</button></div></div>
       ${banners}
       ${state.items.length ? `
       <div class="stats">
@@ -712,9 +722,19 @@
           <div class="row">${notifState === 'unsupported' ? '<span class="muted small">Not supported in this browser.</span>' : s.notify && notifState === 'granted' ? '<span class="pill green">On</span><button class="btn sm" data-act="notify-off">Turn off</button><button class="btn sm ghost" data-act="notify-test">Send a test</button>' : '<button class="btn" data-act="notify-on">Turn on notifications</button>'}
           <button class="btn" data-act="export-ics">📅 Export reminders to calendar (.ics)</button></div>
         </div>
+        <div class="card"><h2>🔐 App lock</h2>
+          ${lock.record ? `
+            <p class="small"><span class="pill green">On</span> Everything you've saved is encrypted on this device. It can only be read after unlocking with your passphrase.</p>
+            <label class="f" style="max-width:260px">Lock automatically after<select data-autolock>${[[1, '1 minute'], [5, '5 minutes'], [15, '15 minutes'], [60, '1 hour'], [0, 'Only when I tap Lock']].map(([v, l]) => `<option value="${v}" ${Number(s.autoLockMinutes) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+            <p class="muted small">Counts time away from the app or not using it.</p>
+            <div class="row"><button class="btn primary" data-act="lock-now">🔒 Lock now</button><button class="btn" data-act="lock-change">Change passphrase</button><button class="btn ghost danger" data-act="lock-off">Turn off</button></div>`
+          : `
+            <p class="muted small">Encrypts everything you've saved (policies, people, documents) with a passphrase only you know. Without it, the data is unreadable, even to someone holding your unlocked phone.</p>
+            <button class="btn primary" data-act="lock-setup">Set up app lock</button>`}
+        </div>
         <div class="card"><h2>💾 Backup & restore</h2>
-          <p class="muted small">Your data is stored only in this browser on this device. Clearing browsing data, or using a different browser, means starting empty. A backup file contains everything, documents included. Keep it somewhere safe (it holds personal details).</p>
-          <div class="row"><button class="btn primary" data-act="export-json">${isTouch ? '📤 Save backup (Drive, email…)' : '⬇︎ Download backup'}</button><label class="btn">⬆︎ Restore from backup<input type="file" accept=".json,application/json" hidden data-act="import-json"></label><button class="btn" data-act="export-csv">⬇︎ Spreadsheet (CSV)</button></div>
+          <p class="muted small">Your data is stored only in this browser on this device. Clearing browsing data, uninstalling the app or using a different browser means starting empty. A backup file contains everything, documents included, and is <b>protected with a password</b> you choose.</p>
+          <div class="row"><button class="btn primary" data-act="export-json">${isTouch ? '📤 Save backup (Drive, email…)' : '⬇︎ Download backup'}</button><label class="btn">⬆︎ Restore from backup<input type="file" accept=".json,application/json" hidden data-act="import-json"></label><button class="btn" data-act="export-csv" title="Not encrypted">⬇︎ Spreadsheet (CSV)</button></div>
           <p class="small muted">${s.lastBackup ? `Last backup: ${esc(C.formatDate(s.lastBackup))}` : 'No backup made yet.'}</p>
           <div id="storage-info" class="small muted"></div>
         </div>
@@ -722,7 +742,7 @@
           <ul class="small" style="line-height:1.7;padding-left:18px">
             <li>No accounts, no servers, no tracking. This page is <b>blocked from making any network connection</b> by its own security policy, so documents can't leave your device even by accident.${served ? ' The only thing ever downloaded is the app itself, when there is an update.' : ''}</li>
             <li>Documents are read on your computer: emails, PDFs and Word files are all parsed locally.</li>
-            <li>Storage: your browser's private database for this file, on this device.</li>
+            <li>Storage: your browser's private database on this device${lock.record ? ', <b>encrypted with AES-256</b> using your passphrase' : '. Turn on <b>App lock</b> to encrypt it'}.</li>
             <li>Tip: don't store passwords or full card numbers here. Use a password manager for those.</li></ul>
         </div>
         <div class="card"><h2>⚠️ Danger zone</h2><p class="muted small">Permanently delete everything stored by this app in this browser.</p><button class="btn danger" data-act="wipe">Delete all my data</button></div>
@@ -747,13 +767,40 @@
     return new Blob([Uint8Array.from(bin, (c) => c.charCodeAt(0))], { type });
   }
 
-  async function exportJSON() {
+  function openBackupDialog() {
+    openModal(`<form id="backup-form"><div class="modal-head"><h2 style="margin:0">💾 Make a backup</h2><button type="button" class="btn ghost" data-act="close">✕</button></div>
+      <p class="muted small">Choose a password for this backup file. You'll need it to restore. Anyone who gets the file without the password just sees scrambled data.</p>
+      <div class="stack">
+        <label class="f">Backup password<input type="password" name="pass" autocomplete="new-password" data-strength="backup-strength"></label>
+        <div id="backup-strength" class="small muted"></div>
+        <label class="f">Type it again<input type="password" name="pass2" autocomplete="new-password"></label>
+        <label class="small row" style="gap:8px"><input type="checkbox" name="nopass" style="width:auto"> Save without a password (anyone with the file can read everything)</label>
+      </div>
+      <div class="modal-foot"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary">Make backup</button></div></form>`, true);
+    $('#backup-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const nopass = fd.get('nopass');
+      const pass = fd.get('pass');
+      if (!nopass) {
+        if (pass.length < 8) return toast('Use at least 8 characters');
+        if (pass !== fd.get('pass2')) return toast("The passwords don't match");
+      }
+      e.target.querySelector('button.primary').disabled = true;
+      toast(nopass ? 'Preparing backup…' : 'Encrypting backup…');
+      closeModal();
+      await exportJSON(nopass ? null : pass);
+    });
+  }
+
+  async function exportJSON(password) {
     const files = [];
     for (const f of state.files.values()) files.push({ ...f, blob: undefined, data: f.blob ? await blobToDataURL(f.blob) : '' });
     const { notified, ...settings } = state.settings;
     const data = { app: 'personal-admin', version: 1, exported: new Date().toISOString(), items: state.items, people: state.people, settings, files };
-    const name = `personal-admin-backup-${C.today()}.json`;
-    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    const name = `personal-admin-backup-${C.today()}${password ? '-protected' : ''}.json`;
+    const text = password ? JSON.stringify(await V.encryptBackup(password, JSON.stringify(data))) : JSON.stringify(data);
+    const blob = new Blob([text], { type: 'application/json' });
     let shared = false;
     if (isTouch && navigator.canShare) {
       const file = new File([blob], name, { type: 'application/json' });
@@ -773,8 +820,30 @@
     let data;
     try { data = JSON.parse(await file.text()); } catch { return toast("That file isn't a valid backup"); }
     if (data.app !== 'personal-admin') return toast("That file isn't a Personal Admin backup");
+    if (!data.encrypted) return restoreData(data);
+    openModal(`<form id="restore-form"><div class="modal-head"><h2 style="margin:0">🔐 Protected backup</h2><button type="button" class="btn ghost" data-act="close">✕</button></div>
+      <p class="muted small">Enter the password you chose when you made this backup.</p>
+      <label class="f">Backup password<input type="password" name="pass" autocomplete="current-password"></label>
+      <div class="modal-foot"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary">Open backup</button></div></form>`, true);
+    $('#restore-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = e.target.querySelector('button.primary');
+      btn.disabled = true; btn.textContent = 'Checking…';
+      try {
+        const plain = JSON.parse(await V.decryptBackup(new FormData(e.target).get('pass'), data));
+        closeModal();
+        await restoreData(plain);
+      } catch (err) {
+        btn.disabled = false; btn.textContent = 'Open backup';
+        toast(err.message === 'wrong-passphrase' ? "That password isn't right" : "Couldn't open that backup");
+      }
+    });
+  }
+
+  async function restoreData(data) {
     const replace = confirm(`Restore ${data.items.length} items, ${data.people.length} people and ${data.files.length} documents?\n\nOK = replace everything currently here\nCancel = merge into what's here`);
-    if (replace) for (const s of DB.STORES) await DB.clear(s);
+    // Settings are kept: they hold the app lock, which must survive a restore
+    if (replace) for (const s of DB.SEALED) await DB.clear(s);
     for (const p of data.people) await DB.put('people', p);
     for (const i of data.items) await DB.put('items', i);
     for (const f of data.files) { const { data: d, ...rest } = f; await DB.put('files', { ...rest, blob: d ? dataURLToBlob(d) : null }); }
@@ -786,6 +855,7 @@
   }
 
   function exportCSV() {
+    if (lock.record && !confirm('A spreadsheet (CSV) file is NOT encrypted. Anyone who gets it can read it. Continue?')) return;
     const cols = ['name', 'category', 'owner', 'provider', 'reference', 'startDate', 'endDate', 'cost', 'frequency', 'monthly', 'paymentMethod', 'autoRenew', 'contactPhone', 'status', 'details', 'notes'];
     const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const rows = state.items.map((i) => [i.name, C.category(i.category).label, person(i.ownerId)?.name || 'Household', i.provider, i.reference, i.startDate, i.endDate, i.cost, i.frequency, C.monthlyCost(i).toFixed(2), i.paymentMethod, i.autoRenew, i.contactPhone, i.status, Object.entries(i.extra || {}).map(([k, v]) => `${C.FIELDS[k]?.label || k}: ${v}`).join('; '), i.notes].map(q).join(','));
@@ -812,7 +882,7 @@
     n.onclick = () => { window.focus(); if (opts.data?.itemId) location.hash = `#/item/${opts.data.itemId}`; };
   }
   async function checkNotifications() {
-    if (!state.settings.notify || !('Notification' in window) || Notification.permission !== 'granted') return;
+    if (isLocked() || !state.settings.notify || !('Notification' in window) || Notification.permission !== 'granted') return;
     const { notifications, keys } = C.dueNotifications(state.items, state.settings, state.settings.notified);
     for (const n of notifications) await showNotification(n.title, { body: n.body, tag: n.tag, data: { itemId: n.itemId } });
     if (keys.length) {
@@ -923,6 +993,7 @@
       for (const f of it.fileIds || []) { await DB.del('files', f); state.files.delete(f); }
       await DB.del('items', it.id);
       state.items = state.items.filter((x) => x.id !== it.id);
+      updateSchedule();
       toast('Deleted'); location.hash = '#/items';
     },
     'item-ics': (el) => exportICS([itemById(el.dataset.id)]),
@@ -974,7 +1045,12 @@
       state.people = state.people.filter((x) => x.id !== p.id);
       closeModal(); render();
     },
-    'export-json': exportJSON,
+    'export-json': openBackupDialog,
+    'lock-now': () => lockNow(),
+    'lock-setup': openLockSetup,
+    'lock-change': openLockChange,
+    'lock-off': openLockOff,
+    'forgot-pass': forgotPassphrase,
     'export-csv': exportCSV,
     'export-ics': () => exportICS(state.items),
     'notify-on': async () => {
@@ -1001,6 +1077,8 @@
     wipe: async () => {
       if (prompt('Type DELETE to permanently remove all your data from this browser.') !== 'DELETE') return;
       for (const s of [...DB.STORES, 'shared']) await DB.clear(s);
+      DB.setCipher(null);
+      lock.record = null; lock.unlocked = false;
       state.imports = [];
       await load(); toast('All data deleted'); location.hash = '#/dashboard'; render();
     },
@@ -1027,6 +1105,7 @@
       return;
     }
     if (el.matches('[data-act=import-json]') && el.files[0]) return importJSON(el.files[0]);
+    if (el.matches('[data-autolock]')) { state.settings.autoLockMinutes = Number(el.value); await DB.setSetting('autoLockMinutes', state.settings.autoLockMinutes); toast('Saved'); return; }
     if (el.matches('[data-filter]')) { state.filters[el.dataset.filter] = el.value; render(); return; }
     if (el.matches('[data-import-form] select[name=targetId]')) {
       const form = el.closest('form');
@@ -1045,6 +1124,11 @@
       const q = $('#q'); q.focus(); q.setSelectionRange(pos, pos);
     }
     if (ev.target.id === 'paste-text') state.pasteDraft = ev.target.value;
+    if (ev.target.dataset.strength) {
+      const st = V.strength(ev.target.value);
+      const out = document.getElementById(ev.target.dataset.strength);
+      if (out) out.innerHTML = st.label ? `<span class="meter m${st.score}"><i></i><i></i><i></i><i></i></span> ${esc(st.label)}` : '';
+    }
   });
 
   document.addEventListener('submit', (ev) => {
@@ -1128,7 +1212,7 @@
   let consuming = false;
   const loadedShares = new Set();
   async function consumeShared() {
-    if (consuming) return;
+    if (consuming || isLocked()) return;
     consuming = true;
     try {
       const rows = (await DB.getAll('shared')).filter((r) => !loadedShares.has(r.id));
@@ -1164,16 +1248,191 @@
   }
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); pwa.installPrompt = e; render(); });
   window.addEventListener('appinstalled', () => { pwa.installPrompt = null; toast('Installed. Find Personal Admin on your home screen'); render(); });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { consumeShared(); checkNotifications(); } });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') { lock.hiddenAt = Date.now(); return; }
+    if (autoLockDue(lock.hiddenAt)) return lockNow();
+    if (!isLocked()) { consumeShared(); checkNotifications(); }
+  });
+
+  /* ================= APP LOCK ================= */
+  const lock = { record: null, unlocked: false, hiddenAt: 0, lastActive: Date.now(), fails: 0, waitUntil: 0 };
+  function isLocked() { return !!lock.record && !lock.unlocked; }
+  function autoLockDue(since) {
+    const mins = Number(state.settings.autoLockMinutes);
+    return lock.unlocked && mins > 0 && since && Date.now() - since > mins * 60000;
+  }
+
+  // The service worker can't decrypt anything, so when the lock is on it gets a bare list of
+  // reminder dates (no names, no details) and can only say "N reminders due".
+  let scheduleTimer;
+  function updateSchedule() {
+    clearTimeout(scheduleTimer);
+    scheduleTimer = setTimeout(() => {
+      const sched = lock.record ? reminders().filter((r) => !r.done).map((r) => ({ d: r.date, k: r.key + r.itemId })) : null;
+      DB.setSetting('schedule', sched).catch(() => {});
+    }, 300);
+  }
+
+  function lockScreenHTML() {
+    const wait = Math.max(0, Math.ceil((lock.waitUntil - Date.now()) / 1000));
+    return `<div class="lock-screen"><div class="card lock-card">
+      <div class="lock-icon">🔐</div>
+      <h1>Personal Admin is locked</h1>
+      <p class="muted small">Your data is encrypted on this device. Enter your passphrase to open it.</p>
+      <form id="unlock-form" class="stack">
+        <input type="password" id="unlock-pass" name="pass" autocomplete="current-password" placeholder="Passphrase" aria-label="Passphrase" ${wait ? 'disabled' : ''}>
+        <button class="btn primary" style="width:100%;justify-content:center" ${wait ? 'disabled' : ''}>${wait ? `Too many tries. Wait ${wait}s` : 'Unlock'}</button>
+      </form>
+      <p class="small" style="margin-top:18px"><a href="#" data-act="forgot-pass">Forgotten your passphrase?</a></p>
+    </div></div>`;
+  }
+
+  async function unlock(pass) {
+    const key = await V.openVault(pass, lock.record);
+    DB.setCipher(V.makeCipher(key));
+    lock.unlocked = true; lock.fails = 0; lock.lastActive = Date.now();
+    await encryptLeftovers();
+    await load();
+    render();
+    consumeShared();
+    checkNotifications();
+  }
+
+  function lockNow() {
+    if (!lock.record) return;
+    DB.setCipher(null);
+    lock.unlocked = false;
+    state.items = []; state.people = []; state.files = new Map(); state.imports = []; state.pasteDraft = '';
+    closeModal();
+    render();
+  }
+
+  // Anything still in plain form (a restore, or encryption interrupted part-way) gets sealed.
+  async function encryptLeftovers() {
+    for (const s of DB.SEALED) for (const row of await DB.getAllRaw(s)) if (!DB.isEncrypted(row)) await DB.put(s, row);
+  }
+
+  function passphraseFields(prefix = '') {
+    return `<label class="f">${prefix}Passphrase<input type="password" name="pass" autocomplete="new-password" data-strength="lock-strength"></label>
+      <div id="lock-strength" class="small muted"></div>
+      <label class="f">Type it again<input type="password" name="pass2" autocomplete="new-password"></label>
+      <p class="muted small">💡 A short sentence works well and is easy to remember, e.g. <i>blue kettle sings at seven</i>. At least 8 characters.</p>`;
+  }
+  function checkNewPass(fd) {
+    const p = fd.get('pass');
+    if (p.length < 8) { toast('Use at least 8 characters'); return null; }
+    if (p !== fd.get('pass2')) { toast("The passphrases don't match"); return null; }
+    return p;
+  }
+
+  function openLockSetup() {
+    openModal(`<form id="lock-form"><div class="modal-head"><h2 style="margin:0">🔐 Set up app lock</h2><button type="button" class="btn ghost" data-act="close">✕</button></div>
+      <p class="muted small">Everything you've saved will be encrypted with this passphrase. You'll type it each time you open the app (and after it auto-locks).</p>
+      <div class="stack">${passphraseFields()}
+        <label class="small row banner warn" style="gap:8px;align-items:flex-start;flex-wrap:nowrap;margin:0"><input type="checkbox" name="ok" required style="width:auto;margin-top:3px"> <span>I understand that <b>if I forget this passphrase, my data cannot be recovered</b>, not even by the app. I'll keep a backup.</span></label>
+      </div>
+      <div class="modal-foot"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary">Turn on app lock</button></div></form>`, true);
+    $('#lock-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const pass = checkNewPass(new FormData(e.target));
+      if (!pass) return;
+      const btn = e.target.querySelector('button.primary');
+      btn.disabled = true; btn.textContent = 'Encrypting…';
+      const { record, key } = await V.createVault(pass);
+      await DB.setSetting('vault', record); // first, so an interrupted run can still be unlocked
+      DB.setCipher(V.makeCipher(key));
+      lock.record = record; lock.unlocked = true; lock.lastActive = Date.now();
+      await encryptLeftovers();
+      updateSchedule();
+      closeModal();
+      toast('App lock is on. Your data is now encrypted');
+      render();
+    });
+  }
+
+  function openLockChange() {
+    openModal(`<form id="lock-form"><div class="modal-head"><h2 style="margin:0">Change passphrase</h2><button type="button" class="btn ghost" data-act="close">✕</button></div>
+      <div class="stack"><label class="f">Current passphrase<input type="password" name="current" autocomplete="current-password"></label>${passphraseFields('New ')}</div>
+      <div class="modal-foot"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary">Change</button></div></form>`, true);
+    $('#lock-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const pass = checkNewPass(fd);
+      if (!pass) return;
+      try {
+        const record = await V.changePassphrase(fd.get('current'), pass, lock.record);
+        await DB.setSetting('vault', record);
+        lock.record = record;
+        closeModal(); toast('Passphrase changed');
+      } catch { toast("Your current passphrase isn't right"); }
+    });
+  }
+
+  function openLockOff() {
+    openModal(`<form id="lock-form"><div class="modal-head"><h2 style="margin:0">Turn off app lock</h2><button type="button" class="btn ghost" data-act="close">✕</button></div>
+      <p class="muted small">Your data will be decrypted and stored unprotected on this device.</p>
+      <label class="f">Passphrase<input type="password" name="current" autocomplete="current-password"></label>
+      <div class="modal-foot"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn danger">Turn off and decrypt</button></div></form>`, true);
+    $('#lock-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try { await V.openVault(new FormData(e.target).get('current'), lock.record); }
+      catch { return toast("That passphrase isn't right"); }
+      const plain = {};
+      for (const s of DB.SEALED) plain[s] = await DB.getAll(s);
+      DB.setCipher(null);
+      for (const s of DB.SEALED) for (const row of plain[s]) await DB.putRaw(s, row);
+      await DB.del('settings', 'vault');
+      lock.record = null; lock.unlocked = false;
+      updateSchedule();
+      closeModal(); toast('App lock is off'); render();
+    });
+  }
+
+  async function forgotPassphrase() {
+    if (!confirm("Without your passphrase, the encrypted data can't be opened by anyone.\n\nYou can erase it and start again, then restore from a backup file if you have one.\n\nErase everything on this device?")) return;
+    if (prompt('Type ERASE to confirm.') !== 'ERASE') return;
+    for (const s of [...DB.STORES, 'shared']) await DB.clear(s);
+    DB.setCipher(null);
+    lock.record = null; lock.unlocked = false;
+    await load();
+    toast('Erased. You can restore a backup from Settings');
+    location.hash = '#/settings';
+    render();
+  }
+
+  document.addEventListener('submit', async (ev) => {
+    if (ev.target.id !== 'unlock-form') return;
+    ev.preventDefault();
+    if (Date.now() < lock.waitUntil) return;
+    const input = $('#unlock-pass');
+    const btn = ev.target.querySelector('button');
+    btn.disabled = true; btn.textContent = 'Unlocking…';
+    try {
+      await unlock(input.value);
+    } catch (e) {
+      lock.fails++;
+      if (lock.fails >= 5) {
+        lock.waitUntil = Date.now() + 30000 * (lock.fails - 4);
+        const tick = setInterval(() => { if (!isLocked() || Date.now() >= lock.waitUntil) clearInterval(tick); if (isLocked()) render(); }, 1000);
+      }
+      render();
+      toast(e.message === 'wrong-passphrase' ? "That passphrase isn't right" : `Couldn't unlock (${e.message})`);
+    }
+  });
+
+  // Auto-lock after a period of no use while the app is open
+  for (const t of ['pointerdown', 'keydown', 'scroll']) document.addEventListener(t, () => { lock.lastActive = Date.now(); }, { passive: true, capture: true });
+  setInterval(() => { if (document.visibilityState === 'visible' && autoLockDue(lock.lastActive)) lockNow(); }, 15000);
 
   /* ---------- start ---------- */
   window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); if (route().name === 'settings') storageInfo(); });
-  load()
+  DB.getSetting('vault', null)
+    .then((record) => { lock.record = record; return load(); })
     .then(() => { render(); if (route().name === 'settings') storageInfo(); consumeShared(); checkNotifications(); setInterval(checkNotifications, 30 * 60 * 1000); })
     .catch((e) => {
       $('#view').innerHTML = `<div class="card"><h2>Storage isn't available</h2><p>This browser blocked local storage for this page (${esc(e && e.message)}). Try opening the file in Chrome, Edge or Firefox, and make sure you're not in a private window.</p></div>`;
     });
 
   // test hook
-  window.__PA = { state, render, handleIncoming, addImport, consumeShared, pwa };
+  window.__PA = { state, render, handleIncoming, addImport, consumeShared, pwa, lock, lockNow };
 })();
