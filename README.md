@@ -12,7 +12,7 @@ Android phone, or as a single file on your computer.
 
 ### 📱 On your Android phone (installed app)
 
-1. Open **https://robt8.github.io/personal-admin/** in Chrome.
+1. Open **https://robt8.github.io/Personal-Admin/** in Chrome.
 2. Tap **Install** on the banner (or ⋮ menu → **Install app**). It now sits on your home screen,
    opens full-screen and works offline.
 3. In **Settings**, tap **Turn on notifications** to get reminders.
