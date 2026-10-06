@@ -210,5 +210,52 @@
     }
   }
 
-  g.PAParsers = { readFile, htmlToText, emlToText, pdfToText, docxToText };
+  /* ---------- Excel .xlsx → rows (first sheet) ---------- */
+  async function xlsxToRows(buf) {
+    const xml = (t) => new DOMParser().parseFromString(t, 'application/xml');
+    let shared = [];
+    try {
+      const sst = xml(await unzipEntry(buf, 'xl/sharedStrings.xml'));
+      shared = [...sst.getElementsByTagName('si')].map((si) => [...si.getElementsByTagName('t')].map((t) => t.textContent).join(''));
+    } catch { /* a sheet with no text cells has no shared strings */ }
+    let sheetPath = 'xl/worksheets/sheet1.xml';
+    try {
+      // Use the first sheet in the workbook's order, wherever it's stored
+      const wb = xml(await unzipEntry(buf, 'xl/workbook.xml'));
+      const first = wb.getElementsByTagName('sheet')[0];
+      const rid = first && (first.getAttribute('r:id') || first.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id'));
+      const rels = xml(await unzipEntry(buf, 'xl/_rels/workbook.xml.rels'));
+      const rel = [...rels.getElementsByTagName('Relationship')].find((r) => r.getAttribute('Id') === rid);
+      if (rel) sheetPath = 'xl/' + rel.getAttribute('Target').replace(/^\/?xl\//, '').replace(/^\//, '');
+    } catch { /* fall back to sheet1 */ }
+    const sheet = xml(await unzipEntry(buf, sheetPath));
+    const colIndex = (ref) => [...ref.replace(/\d+/g, '')].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+    const rows = [];
+    for (const row of sheet.getElementsByTagName('row')) {
+      const out = [];
+      for (const c of row.getElementsByTagName('c')) {
+        const i = colIndex(c.getAttribute('r') || 'A');
+        const t = c.getAttribute('t');
+        const v = c.getElementsByTagName('v')[0]?.textContent ?? '';
+        let val;
+        if (t === 's') val = shared[Number(v)] ?? '';
+        else if (t === 'inlineStr') val = [...c.getElementsByTagName('t')].map((x) => x.textContent).join('');
+        else if (t === 'str' || t === 'b' || t === 'e') val = v;
+        else val = v === '' ? '' : Number(v);
+        while (out.length < i) out.push('');
+        out[i] = typeof val === 'string' ? val.trim() : val;
+      }
+      if (out.some((x) => x !== '' && x != null)) rows.push(out);
+    }
+    return rows;
+  }
+
+  const isSpreadsheet = (file) => /\.(csv|tsv|xlsx)$/i.test(file.name || '') || /text\/csv|tab-separated|spreadsheetml\.sheet/.test(file.type || '');
+
+  async function readSpreadsheet(file) {
+    if (/\.xlsx$/i.test(file.name || '') || /spreadsheetml\.sheet/.test(file.type || '')) return xlsxToRows(await file.arrayBuffer());
+    return g.PASheet.parseDelimited(await file.text());
+  }
+
+  g.PAParsers = { readFile, htmlToText, emlToText, pdfToText, docxToText, isSpreadsheet, readSpreadsheet };
 })(globalThis);

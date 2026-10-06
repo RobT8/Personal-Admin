@@ -34,6 +34,8 @@
             "message/rfc822", ".eml", ".msg", "application/vnd.ms-outlook",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx",
             "text/plain", "text/html", ".txt",
+            "text/csv", ".csv", "text/tab-separated-values", ".tsv",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx",
             "image/*"
           ]
         }

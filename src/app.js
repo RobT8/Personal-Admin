@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  const C = window.PACore, X = window.PAExtract, P = window.PAParsers, DB = window.PADB, V = window.PAVault;
+  const C = window.PACore, X = window.PAExtract, P = window.PAParsers, DB = window.PADB, V = window.PAVault, SH = window.PASheet;
 
   if (window.pdfjsLib && window.pdfjsWorker) {
     // The worker code is already loaded on the page, so pdf.js runs in-thread — no worker file to fetch.
@@ -76,6 +76,8 @@
     return safe.replace(new RegExp(parts.join('|'), 'g'), (m) => `<mark>${m}</mark>`);
   }
 
+  function keepScroll(fn) { const y = window.scrollY; fn(); window.scrollTo(0, y); }
+
   /* ---------- persistence ---------- */
   async function saveItem(item) {
     item.updated = C.today();
@@ -139,12 +141,12 @@
     if (isLocked()) { $('#view').innerHTML = lockScreenHTML(); setTimeout(() => $('#unlock-pass')?.focus(), 0); return; }
     $('#nav-lock').hidden = !lock.record;
     const r = route();
-    $$('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === (r.name === 'item' ? 'items' : r.name)));
+    $$('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === (r.name === 'item' ? 'items' : r.name === 'import' ? 'inbox' : r.name)));
     const badge = $('#inbox-count');
     badge.hidden = !state.imports.length;
     badge.textContent = state.imports.length;
     const view = $('#view');
-    const views = { dashboard: viewDashboard, items: viewItems, item: () => viewItem(r.id), calendar: viewCalendar, inbox: viewInbox, people: viewPeople, settings: viewSettings };
+    const views = { dashboard: viewDashboard, items: viewItems, item: () => viewItem(r.id), calendar: viewCalendar, inbox: viewInbox, people: viewPeople, settings: viewSettings, import: viewSheetImport };
     view.innerHTML = (views[r.name] || viewDashboard)();
     afterRender(r);
     const due = reminders().filter((x) => !x.done && x.date <= C.today()).length;
@@ -180,9 +182,9 @@
           ${isTouch
             ? '<li><b>Share a renewal PDF or email text to “Personal Admin”</b> from any app (or tap <i>Add from file</i>), and the details are read for you.</li>'
             : '<li><b>Drag a renewal email, PDF or contract</b> anywhere onto this window, and the details are read for you.</li>'}
-          <li>Or <a href="#" data-act="new-item">add something by hand</a>.</li>
+          <li>Already keep a list in a spreadsheet? <a href="#/import">Import it in one go</a>. Or <a href="#" data-act="new-item">add something by hand</a>.</li>
         </ol>
-        <div class="row"><button class="btn primary" data-act="new-item">＋ Add manually</button><a class="btn" href="#/inbox">📥 Add from a file</a><button class="btn" data-act="load-example">Try with example data</button></div>
+        <div class="row"><button class="btn primary" data-act="new-item">＋ Add manually</button><a class="btn" href="#/inbox">📥 Add from a file</a><a class="btn" href="#/import">📊 Import a spreadsheet</a><button class="btn" data-act="load-example">Try with example data</button></div>
       </div>`;
     } else {
       const days = state.settings.lastBackup ? C.daysBetween(state.settings.lastBackup, today) : Infinity;
@@ -520,7 +522,7 @@
 
   /* ================= INBOX / IMPORT ================= */
   function viewInbox() {
-    return `<div class="page-head"><div><h1>Add from a file</h1><div class="muted">Drop emails, PDFs or documents. The details are read on this device and nothing is uploaded.</div></div></div>
+    return `<div class="page-head"><div><h1>Add from a file</h1><div class="muted">Drop emails, PDFs or documents. The details are read on this device and nothing is uploaded.</div></div><a class="btn" href="#/import">📊 Import a spreadsheet</a></div>
       <div class="dropzone" data-dropitem="">
         <div class="big">📥</div>
         <h2 style="margin:6px 0">${isTouch ? 'Pick a file, or share one to this app' : 'Drag & drop here, or anywhere on the page'}</h2>
@@ -626,7 +628,13 @@
   }
 
   async function handleIncoming(dt, targetId) {
-    const files = [...(dt.files || [])];
+    let files = [...(dt.files || [])];
+    const sheets = files.filter(P.isSpreadsheet);
+    if (sheets.length) {
+      await loadSheetFile(sheets[0]);
+      files = files.filter((f) => !P.isSpreadsheet(f));
+      if (!files.length) return;
+    }
     const jobs = [];
     if (files.length) for (const f of files) jobs.push(addImport({ file: f, targetId: targetId || undefined }));
     else {
@@ -673,6 +681,94 @@
     if (imp.imageUrl) URL.revokeObjectURL(imp.imageUrl);
     toast(base ? 'Updated' : 'Saved');
     if (state.imports.length) render(); else location.hash = `#/item/${item.id}`;
+  }
+
+  /* ================= SPREADSHEET IMPORT ================= */
+  // state.sheet = { fileName, rows, map, overrides: {row: {category, ownerId}}, skip: Set(row) }
+  function sheetResults() {
+    const sh = state.sheet;
+    return SH.buildItems(sh.rows, sh.map, state.people, state.items).map((r) => {
+      const o = sh.overrides[r.row] || {};
+      return { ...r, item: { ...r.item, ...o }, include: sh.skip.has(r.row) ? false : sh.keep.has(r.row) ? true : !r.duplicateOf };
+    });
+  }
+
+  async function loadSheetFile(file) {
+    try {
+      startSheet(await P.readSpreadsheet(file), file.name);
+    } catch (e) {
+      toast(`Couldn't read that spreadsheet (${e.message})`);
+    }
+  }
+
+  function startSheet(rows, fileName) {
+    if (!rows || rows.length < 2) return toast('No rows found. Make sure the headings are in the first row');
+    state.sheet = { fileName, rows, map: SH.guessMapping(rows[0].map(String)), overrides: {}, skip: new Set(), keep: new Set() };
+    if (route().name !== 'import') location.hash = '#/import'; else render();
+  }
+
+  function viewSheetImport() {
+    const sh = state.sheet;
+    const head = `<div class="row small" style="margin-bottom:10px"><a href="#/inbox">← Add from a file</a></div>
+      <div class="page-head"><div><h1>📊 Import a spreadsheet</h1><div class="muted">Bring in your existing list in one go. It's read on this device and nothing is uploaded.</div></div></div>`;
+    if (!sh) {
+      return `${head}
+        <div class="grid grid-2">
+          <div class="card"><h2>${isTouch ? '📱 From the Google Sheets app' : '✂️ Copy and paste (quickest)'}</h2>
+            <ol class="small" style="line-height:1.8;padding-left:18px">
+              <li>Open your sheet${isTouch ? ' in the <b>Google Sheets</b> app' : ''}.</li>
+              <li>${isTouch ? 'Tap the top-left corner square (above row 1, left of column A) to select everything.' : 'Click any cell and press <b>Ctrl+A</b> (Cmd+A on a Mac) to select everything.'}</li>
+              <li>${isTouch ? 'Tap <b>Copy</b>.' : 'Press <b>Ctrl+C</b> (Cmd+C).'}</li>
+              <li>${isTouch ? 'Come back here, long-press the box below and tap <b>Paste</b>.' : 'Click the box below and press <b>Ctrl+V</b> (Cmd+V).'}</li></ol>
+            <textarea id="sheet-paste" style="min-height:120px" placeholder="Paste your spreadsheet here, including the heading row…"></textarea>
+            <div class="row" style="margin-top:8px"><button class="btn primary" data-act="sheet-paste">Read spreadsheet</button></div>
+          </div>
+          <div class="card"><h2>📁 Or use a file</h2>
+            <p class="small">In Google Sheets: <b>File → Download → Comma-separated values (.csv)</b>${isTouch ? '. In the phone app: ⋮ → <b>Share &amp; export → Save as → CSV</b> (or Excel)' : ''}. Excel (.xlsx) files work too.</p>
+            <label class="btn primary">Choose spreadsheet file<input type="file" accept=".csv,.tsv,.xlsx,text/csv" hidden data-act="sheet-file"></label>
+            <p class="muted small" style="margin-top:14px">💡 The first row should be the headings (e.g. <i>Item, Provider, Frequency, Renewal Date…</i>). Any headings work, and you can match them up on the next screen.</p>
+            ${state.people.length ? '' : '<p class="small banner info" style="margin-top:10px">👪 Tip: <a href="#/people">add your household</a> first. Then items like "Sam\'s mobile" are tagged to the right person automatically.</p>'}
+          </div>
+        </div>`;
+    }
+    const results = sheetResults();
+    const chosen = results.filter((r) => r.include).length;
+    const people = [['', 'Household / shared'], ...state.people.map((p) => [p.id, p.name])];
+    const freqLabel = (f) => (C.FREQUENCIES.find((x) => x.id === f) || {}).label || '';
+    return `${head}
+      <details class="card" style="margin-bottom:16px" ${sh.map.includes('ignore') || state.sheetMapOpen ? 'open' : ''} data-sheet-map>
+        <summary style="cursor:pointer"><span class="row" style="display:inline-flex"><b>1. Match your columns</b> <span class="muted small">${esc(sh.fileName)} · ${sh.rows.length - 1} rows${sh.map.includes('ignore') ? '' : ' · ✅ all matched'}</span></span></summary>
+        <div class="form-grid" style="margin-top:12px">${sh.rows[0].map((h, i) => `<label class="f">“${esc(h || `Column ${i + 1}`)}” is…<select data-sheet-col="${i}">${SH.TARGETS.map(([v, l]) => `<option value="${v}" ${sh.map[i] === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`).join('')}</div>
+      </details>
+      <div class="card">
+        <div class="row" style="margin-bottom:6px"><h2 style="margin:0">2. Check the items</h2><span class="spacer"></span><span class="small"><b>${chosen}</b> of ${results.length} selected</span></div>
+        <p class="muted small" style="margin-top:0">The type and person are guessed from each item's name. Change any that are wrong. You can edit everything else after importing.</p>
+        <div class="sheet-rows">${results.map((r) => {
+          const it = r.item, cat = C.category(it.category);
+          const bits = [it.provider, it.cost !== '' ? `${money(it.cost)} ${freqLabel(it.frequency).toLowerCase()}` : '', it.endDate ? `${cat.endLabel.toLowerCase()} ${C.formatDate(it.endDate)}` : 'no date', it.paymentDay ? `paid on day ${it.paymentDay}` : ''].filter(Boolean);
+          return `<div class="sheet-row ${r.include ? '' : 'off'}">
+            <input type="checkbox" data-sheet-include="${r.row}" ${r.include ? 'checked' : ''} aria-label="Import ${esc(it.name)}" style="width:auto">
+            <span class="ic">${cat.icon}</span>
+            <div class="t"><b>${esc(it.name)}</b><span class="muted small">${esc(bits.join(' · '))}</span>${r.duplicateOf ? '<span class="pill amber" style="margin-top:4px">Already in the app, so unticked</span>' : ''}${it.notes ? `<span class="muted small">📝 ${esc(it.notes.split('\n')[0])}</span>` : ''}</div>
+            <select data-sheet-cat="${r.row}" aria-label="Type">${categoryOptions(it.category)}</select>
+            <select data-sheet-owner="${r.row}" aria-label="Belongs to">${people.map(([v, l]) => `<option value="${esc(v)}" ${v === it.ownerId ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+          </div>`;
+        }).join('') || '<div class="empty">No items found. Check that one column is set to "Item name".</div>'}</div>
+        <div class="modal-foot"><button class="btn" data-act="sheet-reset">Start again</button><button class="btn primary" data-act="sheet-import" ${chosen ? '' : 'disabled'}>Import ${chosen} item${chosen === 1 ? '' : 's'}</button></div>
+      </div>`;
+  }
+
+  async function importSheet() {
+    const chosen = sheetResults().filter((r) => r.include);
+    if (!chosen.length) return;
+    const name = state.sheet.fileName;
+    for (const r of chosen) {
+      await saveItem(C.newItem({ ...r.item, history: [{ date: C.today(), text: `Imported from spreadsheet “${name}” (row ${r.row})` }] }));
+    }
+    state.sheet = null; state.sheetMapOpen = false;
+    state.filters = { ...state.filters, group: 'all', person: 'all', status: 'active', q: '', sort: 'date' };
+    toast(`Imported ${chosen.length} item${chosen.length === 1 ? '' : 's'}`);
+    location.hash = '#/items';
   }
 
   /* ================= PEOPLE ================= */
@@ -736,7 +832,7 @@
         </div>
         <div class="card"><h2>💾 Backup & restore</h2>
           <p class="muted small">Your data is stored only in this browser on this device. Clearing browsing data, uninstalling the app or using a different browser means starting empty. A backup file contains everything, documents included, and is <b>protected with a password</b> you choose.</p>
-          <div class="row"><button class="btn primary" data-act="export-json">${isTouch ? '📤 Save backup (Drive, email…)' : '⬇︎ Download backup'}</button><label class="btn">⬆︎ Restore from backup<input type="file" accept=".json,application/json" hidden data-act="import-json"></label><button class="btn" data-act="export-csv" title="Not encrypted">⬇︎ Spreadsheet (CSV)</button></div>
+          <div class="row"><button class="btn primary" data-act="export-json">${isTouch ? '📤 Save backup (Drive, email…)' : '⬇︎ Download backup'}</button><label class="btn">⬆︎ Restore from backup<input type="file" accept=".json,application/json" hidden data-act="import-json"></label><button class="btn" data-act="export-csv" title="Not encrypted">⬇︎ Spreadsheet (CSV)</button><a class="btn" href="#/import">📊 Import a spreadsheet</a></div>
           <p class="small muted">${s.lastBackup ? `Last backup: ${esc(C.formatDate(s.lastBackup))}` : 'No backup made yet.'}</p>
           <div id="storage-info" class="small muted"></div>
         </div>
@@ -1048,6 +1144,13 @@
       closeModal(); render();
     },
     'export-json': openBackupDialog,
+    'sheet-paste': () => {
+      const text = $('#sheet-paste').value;
+      if (!text.trim()) return toast('Paste your spreadsheet into the box first');
+      startSheet(SH.parseDelimited(text), 'Pasted spreadsheet');
+    },
+    'sheet-reset': () => { state.sheet = null; state.sheetMapOpen = false; render(); },
+    'sheet-import': importSheet,
     'lock-now': () => lockNow(),
     'lock-setup': openLockSetup,
     'lock-change': openLockChange,
@@ -1107,6 +1210,19 @@
       return;
     }
     if (el.matches('[data-act=import-json]') && el.files[0]) return importJSON(el.files[0]);
+    if (el.matches('[data-act=sheet-file]') && el.files[0]) return loadSheetFile(el.files[0]);
+    if (el.matches('[data-sheet-col]')) { state.sheet.map[Number(el.dataset.sheetCol)] = el.value; state.sheetMapOpen = true; keepScroll(render); return; }
+    if (el.matches('[data-sheet-include]')) {
+      const row = Number(el.dataset.sheetInclude);
+      state.sheet.skip.delete(row); state.sheet.keep.delete(row);
+      (el.checked ? state.sheet.keep : state.sheet.skip).add(row);
+      keepScroll(render); return;
+    }
+    if (el.matches('[data-sheet-cat], [data-sheet-owner]')) {
+      const row = Number(el.dataset.sheetCat || el.dataset.sheetOwner);
+      state.sheet.overrides[row] = { ...state.sheet.overrides[row], [el.dataset.sheetCat ? 'category' : 'ownerId']: el.value };
+      keepScroll(render); return;
+    }
     if (el.matches('[data-autolock]')) { state.settings.autoLockMinutes = Number(el.value); await DB.setSetting('autoLockMinutes', state.settings.autoLockMinutes); toast('Saved'); return; }
     if (el.matches('[data-filter]')) { state.filters[el.dataset.filter] = el.value; render(); return; }
     if (el.matches('[data-import-form] select[name=targetId]')) {
@@ -1223,6 +1339,7 @@
         loadedShares.add(row.id);
         for (const f of row.files || []) {
           const file = f.blob instanceof File ? f.blob : new File([f.blob], f.name, { type: f.type });
+          if (P.isSpreadsheet(file)) { await loadSheetFile(file); await DB.del('shared', row.id); return; }
           await addImport({ file, sharedId: row.id });
         }
         if (row.text && !(row.files || []).length) await addImport({ text: row.text, fileName: 'Shared text', sharedId: row.id });
@@ -1304,7 +1421,7 @@
     if (!lock.record) return;
     DB.setCipher(null);
     lock.unlocked = false;
-    state.items = []; state.people = []; state.files = new Map(); state.imports = []; state.pasteDraft = '';
+    state.items = []; state.people = []; state.files = new Map(); state.imports = []; state.pasteDraft = ''; state.sheet = null;
     closeModal();
     render();
   }

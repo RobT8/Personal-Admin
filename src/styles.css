@@ -254,3 +254,15 @@ body.locked main { max-width: none; }
 .meter.m2 i:nth-child(-n+2) { background: var(--amber); }
 .meter.m3 i:nth-child(-n+3), .meter.m4 i { background: var(--green); }
 @media (max-width: 760px) { .nav-lock { display: none !important; } }
+
+/* Spreadsheet import */
+.sheet-row { display: grid; grid-template-columns: auto 32px minmax(0, 1fr) 190px 160px; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid var(--border); }
+.sheet-row:first-child { border-top: 0; }
+.sheet-row.off { opacity: .5; }
+.sheet-row .ic { font-size: 1.4rem; text-align: center; }
+.sheet-row .t b, .sheet-row .t span { display: block; }
+.sheet-row select { font-size: .85rem; padding: 6px 8px; }
+@media (max-width: 760px) {
+  .sheet-row { grid-template-columns: auto 28px minmax(0, 1fr); }
+  .sheet-row select { grid-column: 3; }
+}

@@ -35,6 +35,20 @@ enter is stored in Chrome on your phone and is never uploaded. Use **Settings �
 now and then, which lets you save a backup file to Google Drive or email it to yourself. If you
 uninstall the app or clear Chrome's data, restore from that file.
 
+### 📊 Already have a spreadsheet?
+
+**Add from file → 📊 Import a spreadsheet.** Copy and paste the cells straight from Google
+Sheets, or use a CSV or Excel file. Any column headings work. These are recognised
+automatically:
+
+`Item · Provider · Frequency · Renewal Date · End Date · Payment Day of each Month · Monthly Amount · Annual Amount`
+(plus Type, Owner/Person, Reference, Start Date, Notes, Phone, Vehicle reg)
+
+It guesses each item's type and person from its name (e.g. *"Sam's Mobile"* → 📱 Mobile phone
+for Sam). Before anything is saved, it shows a preview where you can fix those guesses and untick
+rows. Rows that are already in the app are unticked automatically, so importing twice doesn't
+create duplicates.
+
 ### 💻 On a computer
 
 1. Download **[`PersonalAdmin.html`](PersonalAdmin.html)** and save it somewhere permanent.
@@ -137,6 +151,6 @@ Every push to `main` runs `.github/workflows/pages.yml`, which tests, builds and
 receives Android shares (`share_target` in `src/manifest.webmanifest`) and checks reminders
 in the background. A new deploy shows an **Update now** banner in the app.
 
-`src/` holds the source (`core.js` data model, `extract.js` text→fields, `parsers.js`
+`src/` holds the source (`core.js` data model, `extract.js` text→fields, `sheet.js` spreadsheet import, `parsers.js`
 file→text, `db.js` IndexedDB, `vault.js` encryption, `app.js` UI, `sw.js` + `manifest.webmanifest` for the phone app). `vendor/` is pdf.js 3.11 (Apache-2.0). Rebuild
 and commit `PersonalAdmin.html` after changing anything in `src/` (`site/` is built by CI).

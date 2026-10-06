@@ -264,6 +264,18 @@ body.locked main { max-width: none; }
 .meter.m2 i:nth-child(-n+2) { background: var(--amber); }
 .meter.m3 i:nth-child(-n+3), .meter.m4 i { background: var(--green); }
 @media (max-width: 760px) { .nav-lock { display: none !important; } }
+
+/* Spreadsheet import */
+.sheet-row { display: grid; grid-template-columns: auto 32px minmax(0, 1fr) 190px 160px; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid var(--border); }
+.sheet-row:first-child { border-top: 0; }
+.sheet-row.off { opacity: .5; }
+.sheet-row .ic { font-size: 1.4rem; text-align: center; }
+.sheet-row .t b, .sheet-row .t span { display: block; }
+.sheet-row select { font-size: .85rem; padding: 6px 8px; }
+@media (max-width: 760px) {
+  .sheet-row { grid-template-columns: auto 28px minmax(0, 1fr); }
+  .sheet-row select { grid-column: 3; }
+}
 </style>
 </head>
 <body>
@@ -1168,6 +1180,228 @@ body.locked main { max-width: none; }
 
 </script>
   <script>
+/* Personal Admin — import rows from a spreadsheet (CSV/TSV, pasted cells, or .xlsx rows).
+   Pure functions: text/rows in, suggested items out. No DOM, no storage. */
+(function (g) {
+  'use strict';
+
+  const C = g.PACore, X = g.PAExtract;
+
+  /* ---------- parsing ---------- */
+
+  // CSV or TSV (what Google Sheets gives you on "Copy"), with quoted fields.
+  function parseDelimited(text) {
+    text = String(text || '').replace(/^﻿/, '').replace(/\r\n?/g, '\n');
+    const firstLine = text.split('\n', 1)[0];
+    const delim = (firstLine.match(/\t/g) || []).length >= (firstLine.match(/,/g) || []).length && firstLine.includes('\t') ? '\t'
+      : (firstLine.match(/;/g) || []).length > (firstLine.match(/,/g) || []).length ? ';' : ',';
+    const rows = [];
+    let row = [], cell = '', q = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (q) {
+        if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; }
+        else cell += ch;
+      } else if (ch === '"' && cell === '') q = true;
+      else if (ch === delim) { row.push(cell); cell = ''; }
+      else if (ch === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+      else cell += ch;
+    }
+    if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+    return rows.map((r) => r.map((c) => c.trim())).filter((r) => r.some((c) => c !== ''));
+  }
+
+  /* ---------- columns ---------- */
+
+  const TARGETS = [
+    ['ignore', '— Ignore this column —'],
+    ['name', 'Item name'],
+    ['provider', 'Provider / company'],
+    ['category', 'Type'],
+    ['owner', 'Belongs to (person)'],
+    ['frequency', 'How often'],
+    ['endDate', 'Renewal date'],
+    ['endDate2', 'End date'],
+    ['startDate', 'Start date'],
+    ['paymentDay', 'Payment day of month'],
+    ['monthlyAmount', 'Monthly amount'],
+    ['annualAmount', 'Annual amount'],
+    ['cost', 'Cost (per payment)'],
+    ['reference', 'Reference / policy no.'],
+    ['phoneNumber', 'Phone number'],
+    ['vehicleReg', 'Vehicle reg'],
+    ['notes', 'Notes'],
+  ];
+
+  // Order matters: the first rule that matches a heading wins.
+  const HEADER_RULES = [
+    ['paymentDay', /(payment|pay|dd|debit|collect\w*)\s*(day|date)|day\s*(of|each)|day paid|date taken/i],
+    ['monthlyAmount', /month\w*\s*(amount|cost|payment|price|£|fee)|per month|pcm|\(monthly\)/i],
+    ['annualAmount', /(annual|year\w*)\s*(amount|cost|payment|price|premium|£|fee)|per (year|annum)|\(annual\)/i],
+    ['endDate', /renew/i],
+    ['endDate2', /end|expir|until|finish|maturity/i],
+    ['startDate', /start|began|inception|from/i],
+    ['frequency', /freq|how often|period|billing|paid\b/i],
+    ['provider', /provider|company|supplier|bank|insurer|lender|network|who with|vendor/i],
+    ['reference', /ref|policy\s*(no|number|#)|account\s*(no|number|#)|number\b|licen[cs]e no/i],
+    ['phoneNumber', /phone|mobile no/i],
+    ['vehicleReg', /reg\b|registration|vehicle/i],
+    ['owner', /owner|person|who\b|for whom|belongs/i],
+    ['category', /type|category|kind/i],
+    ['cost', /amount|cost|price|premium|£|payment|fee/i],
+    ['notes', /note|comment|detail|info/i],
+    ['name', /item|name|description|what|service|policy|contract|bill/i],
+  ];
+
+  function guessMapping(headers) {
+    const used = new Set();
+    const map = headers.map((h) => {
+      for (const [target, re] of HEADER_RULES) {
+        if (re.test(h) && !used.has(target)) { used.add(target); return target; }
+      }
+      return 'ignore';
+    });
+    // An "End date" with no "Renewal date" column is the key date
+    if (!map.includes('endDate') && map.includes('endDate2')) map[map.indexOf('endDate2')] = 'endDate';
+    // No obvious name column: use the first unmapped one
+    if (!map.includes('name')) {
+      const i = map.indexOf('ignore');
+      if (i >= 0) map[i] = 'name';
+    }
+    return map;
+  }
+
+  /* ---------- values ---------- */
+
+  function parseMoney(v) {
+    if (v == null || v === '') return null;
+    if (typeof v === 'number') return v;
+    const m = /-?\d[\d,]*(?:\.\d+)?|-?\.\d+/.exec(String(v).replace(/\s/g, ''));
+    if (!m) return null;
+    const n = parseFloat(m[0].replace(/,/g, ''));
+    return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
+  }
+
+  function parseFrequency(v) {
+    const s = String(v || '').toLowerCase();
+    if (!s) return '';
+    if (/10|ten/.test(s)) return 'ten_monthly';
+    if (/quarter|3\s*month/.test(s)) return 'quarterly';
+    if (/week/.test(s)) return 'weekly';
+    if (/one[\s-]?off|once|single/.test(s)) return 'one_off';
+    if (/month|pcm|\bpm\b|\bm\b/.test(s)) return 'monthly';
+    if (/annual|year|\bpa\b|\bp\.a\.|12\s*month|\by\b/.test(s)) return 'annually';
+    return '';
+  }
+
+  const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+  function parseDate(v) {
+    if (v == null || v === '') return '';
+    // Spreadsheet serial number (days since 1899-12-30), as found in .xlsx files
+    if (typeof v === 'number' || /^\d{5}(\.\d+)?$/.test(String(v))) {
+      const n = Number(v);
+      if (n > 20000 && n < 80000) return C.addDays('1899-12-30', Math.floor(n));
+    }
+    const s = String(v);
+    const found = X.findDates(s);
+    if (found.length) return found[0].iso;
+    // "March 2027" / "Mar-27": take the 1st of that month
+    const my = /\b([A-Za-z]{3,9})[\s\-/]+(\d{4}|\d{2})\b/.exec(s);
+    if (my && MONTHS[my[1].slice(0, 3).toLowerCase()]) {
+      const y = my[2].length === 2 ? 2000 + Number(my[2]) : Number(my[2]);
+      return `${y}-${String(MONTHS[my[1].slice(0, 3).toLowerCase()]).padStart(2, '0')}-01`;
+    }
+    return '';
+  }
+
+  function parseDay(v) {
+    const m = /\b([1-9]|[12]\d|3[01])(?:st|nd|rd|th)?\b/i.exec(String(v || ''));
+    if (!m) return '';
+    // A full date in the "day" column: use its day
+    const d = parseDate(v);
+    return d ? String(C.parseISO(d).getDate()) : m[1];
+  }
+
+  function matchCategory(v) {
+    const s = String(v || '').toLowerCase().trim();
+    if (!s) return '';
+    const exact = C.CATEGORIES.find((c) => c.label.toLowerCase() === s || c.id === s);
+    if (exact) return exact.id;
+    const res = X.extract(s);
+    return res.categoryRanking.length ? res.fields.category : '';
+  }
+
+  function matchOwner(v, people) {
+    const s = String(v || '').toLowerCase().trim();
+    if (!s || !people.length) return '';
+    const p = people.find((x) => x.name.toLowerCase() === s) || people.find((x) => x.name.toLowerCase().split(' ')[0] === s.split(/[\s']/)[0]);
+    return p ? p.id : '';
+  }
+
+  /* ---------- rows → items ---------- */
+
+  // rows: array of arrays (first row = headers); map: target per column
+  function buildItems(rows, map, people = [], existing = []) {
+    const out = [];
+    for (let r = 1; r < rows.length; r++) {
+      const row = rows[r];
+      const v = {};
+      map.forEach((t, i) => { if (t !== 'ignore' && row[i] != null && String(row[i]).trim() !== '') v[t] = row[i]; });
+      const name = String(v.name || '').trim();
+      if (!name || /^(sub)?total\b/i.test(name)) continue;
+
+      const guess = X.extract(`${name}\n${v.provider || ''}`, {}, people);
+      const category = matchCategory(v.category) || (guess.categoryRanking.length ? guess.fields.category : 'other');
+      const monthly = parseMoney(v.monthlyAmount), annual = parseMoney(v.annualAmount), plain = parseMoney(v.cost);
+      let frequency = parseFrequency(v.frequency);
+      const paymentDay = v.paymentDay ? parseDay(v.paymentDay) : '';
+      if (!frequency) frequency = monthly != null || paymentDay ? 'monthly' : annual != null ? 'annually' : plain != null ? 'monthly' : 'monthly';
+      const perYear = (C.FREQUENCIES.find((f) => f.id === frequency) || {}).perYear || 0;
+      let cost = plain;
+      if (frequency === 'monthly') cost = monthly ?? (annual != null ? Math.round((annual / 12) * 100) / 100 : plain);
+      else if (frequency === 'annually') cost = annual ?? (monthly != null ? Math.round(monthly * 12 * 100) / 100 : plain);
+      else if (cost == null && perYear) cost = annual != null ? Math.round((annual / perYear) * 100) / 100 : monthly != null ? Math.round(((monthly * 12) / perYear) * 100) / 100 : null;
+
+      const renewal = parseDate(v.endDate), end = parseDate(v.endDate2);
+      const notes = [];
+      if (renewal && end && renewal !== end) notes.push(`End date: ${C.formatDate(end)}`);
+      if (v.notes) notes.push(String(v.notes));
+      // When the sheet gives both amounts, keep the other one as a note so nothing is lost
+      if (monthly != null && annual != null) notes.push(`From spreadsheet: ${C.formatMoney(monthly)} monthly / ${C.formatMoney(annual)} annually`);
+
+      const extra = {};
+      if (v.phoneNumber) extra.phoneNumber = String(v.phoneNumber);
+      if (v.vehicleReg) extra.vehicleReg = String(v.vehicleReg).toUpperCase();
+      Object.assign(extra, Object.fromEntries(Object.entries(guess.extra).filter(([k]) => ['vehicleReg', 'phoneNumber'].includes(k) && !extra[k])));
+
+      const ownerId = matchOwner(v.owner, people) || (guess.confidence.ownerId ? guess.fields.ownerId : '') || '';
+      const provider = String(v.provider || '').trim();
+      const dup = existing.find((i) => i.name.toLowerCase() === name.toLowerCase() && (i.provider || '').toLowerCase() === provider.toLowerCase());
+
+      out.push({
+        row: r + 1,
+        duplicateOf: dup ? dup.id : '',
+        item: {
+          name, category, ownerId, provider,
+          reference: String(v.reference || '').trim(),
+          frequency,
+          cost: cost == null ? '' : cost,
+          paymentDay,
+          endDate: renewal || end,
+          startDate: parseDate(v.startDate),
+          notes: notes.join('\n'),
+          extra,
+        },
+      });
+    }
+    return out;
+  }
+
+  g.PASheet = { parseDelimited, guessMapping, buildItems, parseMoney, parseFrequency, parseDate, parseDay, TARGETS };
+})(globalThis);
+
+</script>
+  <script>
 /* Personal Admin — read dropped files into plain text, entirely in the browser.
    Supports: .eml (incl. attached PDFs), .msg (best effort), .pdf, .docx, .html, .txt, images (kept, not read). */
 (function (g) {
@@ -1380,7 +1614,54 @@ body.locked main { max-width: none; }
     }
   }
 
-  g.PAParsers = { readFile, htmlToText, emlToText, pdfToText, docxToText };
+  /* ---------- Excel .xlsx → rows (first sheet) ---------- */
+  async function xlsxToRows(buf) {
+    const xml = (t) => new DOMParser().parseFromString(t, 'application/xml');
+    let shared = [];
+    try {
+      const sst = xml(await unzipEntry(buf, 'xl/sharedStrings.xml'));
+      shared = [...sst.getElementsByTagName('si')].map((si) => [...si.getElementsByTagName('t')].map((t) => t.textContent).join(''));
+    } catch { /* a sheet with no text cells has no shared strings */ }
+    let sheetPath = 'xl/worksheets/sheet1.xml';
+    try {
+      // Use the first sheet in the workbook's order, wherever it's stored
+      const wb = xml(await unzipEntry(buf, 'xl/workbook.xml'));
+      const first = wb.getElementsByTagName('sheet')[0];
+      const rid = first && (first.getAttribute('r:id') || first.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id'));
+      const rels = xml(await unzipEntry(buf, 'xl/_rels/workbook.xml.rels'));
+      const rel = [...rels.getElementsByTagName('Relationship')].find((r) => r.getAttribute('Id') === rid);
+      if (rel) sheetPath = 'xl/' + rel.getAttribute('Target').replace(/^\/?xl\//, '').replace(/^\//, '');
+    } catch { /* fall back to sheet1 */ }
+    const sheet = xml(await unzipEntry(buf, sheetPath));
+    const colIndex = (ref) => [...ref.replace(/\d+/g, '')].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+    const rows = [];
+    for (const row of sheet.getElementsByTagName('row')) {
+      const out = [];
+      for (const c of row.getElementsByTagName('c')) {
+        const i = colIndex(c.getAttribute('r') || 'A');
+        const t = c.getAttribute('t');
+        const v = c.getElementsByTagName('v')[0]?.textContent ?? '';
+        let val;
+        if (t === 's') val = shared[Number(v)] ?? '';
+        else if (t === 'inlineStr') val = [...c.getElementsByTagName('t')].map((x) => x.textContent).join('');
+        else if (t === 'str' || t === 'b' || t === 'e') val = v;
+        else val = v === '' ? '' : Number(v);
+        while (out.length < i) out.push('');
+        out[i] = typeof val === 'string' ? val.trim() : val;
+      }
+      if (out.some((x) => x !== '' && x != null)) rows.push(out);
+    }
+    return rows;
+  }
+
+  const isSpreadsheet = (file) => /\.(csv|tsv|xlsx)$/i.test(file.name || '') || /text\/csv|tab-separated|spreadsheetml\.sheet/.test(file.type || '');
+
+  async function readSpreadsheet(file) {
+    if (/\.xlsx$/i.test(file.name || '') || /spreadsheetml\.sheet/.test(file.type || '')) return xlsxToRows(await file.arrayBuffer());
+    return g.PASheet.parseDelimited(await file.text());
+  }
+
+  g.PAParsers = { readFile, htmlToText, emlToText, pdfToText, docxToText, isSpreadsheet, readSpreadsheet };
 })(globalThis);
 
 </script>
@@ -1605,7 +1886,7 @@ body.locked main { max-width: none; }
 (function () {
   'use strict';
 
-  const C = window.PACore, X = window.PAExtract, P = window.PAParsers, DB = window.PADB, V = window.PAVault;
+  const C = window.PACore, X = window.PAExtract, P = window.PAParsers, DB = window.PADB, V = window.PAVault, SH = window.PASheet;
 
   if (window.pdfjsLib && window.pdfjsWorker) {
     // The worker code is already loaded on the page, so pdf.js runs in-thread — no worker file to fetch.
@@ -1678,6 +1959,8 @@ body.locked main { max-width: none; }
     return safe.replace(new RegExp(parts.join('|'), 'g'), (m) => `<mark>${m}</mark>`);
   }
 
+  function keepScroll(fn) { const y = window.scrollY; fn(); window.scrollTo(0, y); }
+
   /* ---------- persistence ---------- */
   async function saveItem(item) {
     item.updated = C.today();
@@ -1741,12 +2024,12 @@ body.locked main { max-width: none; }
     if (isLocked()) { $('#view').innerHTML = lockScreenHTML(); setTimeout(() => $('#unlock-pass')?.focus(), 0); return; }
     $('#nav-lock').hidden = !lock.record;
     const r = route();
-    $$('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === (r.name === 'item' ? 'items' : r.name)));
+    $$('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === (r.name === 'item' ? 'items' : r.name === 'import' ? 'inbox' : r.name)));
     const badge = $('#inbox-count');
     badge.hidden = !state.imports.length;
     badge.textContent = state.imports.length;
     const view = $('#view');
-    const views = { dashboard: viewDashboard, items: viewItems, item: () => viewItem(r.id), calendar: viewCalendar, inbox: viewInbox, people: viewPeople, settings: viewSettings };
+    const views = { dashboard: viewDashboard, items: viewItems, item: () => viewItem(r.id), calendar: viewCalendar, inbox: viewInbox, people: viewPeople, settings: viewSettings, import: viewSheetImport };
     view.innerHTML = (views[r.name] || viewDashboard)();
     afterRender(r);
     const due = reminders().filter((x) => !x.done && x.date <= C.today()).length;
@@ -1782,9 +2065,9 @@ body.locked main { max-width: none; }
           ${isTouch
             ? '<li><b>Share a renewal PDF or email text to “Personal Admin”</b> from any app (or tap <i>Add from file</i>), and the details are read for you.</li>'
             : '<li><b>Drag a renewal email, PDF or contract</b> anywhere onto this window, and the details are read for you.</li>'}
-          <li>Or <a href="#" data-act="new-item">add something by hand</a>.</li>
+          <li>Already keep a list in a spreadsheet? <a href="#/import">Import it in one go</a>. Or <a href="#" data-act="new-item">add something by hand</a>.</li>
         </ol>
-        <div class="row"><button class="btn primary" data-act="new-item">＋ Add manually</button><a class="btn" href="#/inbox">📥 Add from a file</a><button class="btn" data-act="load-example">Try with example data</button></div>
+        <div class="row"><button class="btn primary" data-act="new-item">＋ Add manually</button><a class="btn" href="#/inbox">📥 Add from a file</a><a class="btn" href="#/import">📊 Import a spreadsheet</a><button class="btn" data-act="load-example">Try with example data</button></div>
       </div>`;
     } else {
       const days = state.settings.lastBackup ? C.daysBetween(state.settings.lastBackup, today) : Infinity;
@@ -2122,7 +2405,7 @@ body.locked main { max-width: none; }
 
   /* ================= INBOX / IMPORT ================= */
   function viewInbox() {
-    return `<div class="page-head"><div><h1>Add from a file</h1><div class="muted">Drop emails, PDFs or documents. The details are read on this device and nothing is uploaded.</div></div></div>
+    return `<div class="page-head"><div><h1>Add from a file</h1><div class="muted">Drop emails, PDFs or documents. The details are read on this device and nothing is uploaded.</div></div><a class="btn" href="#/import">📊 Import a spreadsheet</a></div>
       <div class="dropzone" data-dropitem="">
         <div class="big">📥</div>
         <h2 style="margin:6px 0">${isTouch ? 'Pick a file, or share one to this app' : 'Drag & drop here, or anywhere on the page'}</h2>
@@ -2228,7 +2511,13 @@ body.locked main { max-width: none; }
   }
 
   async function handleIncoming(dt, targetId) {
-    const files = [...(dt.files || [])];
+    let files = [...(dt.files || [])];
+    const sheets = files.filter(P.isSpreadsheet);
+    if (sheets.length) {
+      await loadSheetFile(sheets[0]);
+      files = files.filter((f) => !P.isSpreadsheet(f));
+      if (!files.length) return;
+    }
     const jobs = [];
     if (files.length) for (const f of files) jobs.push(addImport({ file: f, targetId: targetId || undefined }));
     else {
@@ -2275,6 +2564,94 @@ body.locked main { max-width: none; }
     if (imp.imageUrl) URL.revokeObjectURL(imp.imageUrl);
     toast(base ? 'Updated' : 'Saved');
     if (state.imports.length) render(); else location.hash = `#/item/${item.id}`;
+  }
+
+  /* ================= SPREADSHEET IMPORT ================= */
+  // state.sheet = { fileName, rows, map, overrides: {row: {category, ownerId}}, skip: Set(row) }
+  function sheetResults() {
+    const sh = state.sheet;
+    return SH.buildItems(sh.rows, sh.map, state.people, state.items).map((r) => {
+      const o = sh.overrides[r.row] || {};
+      return { ...r, item: { ...r.item, ...o }, include: sh.skip.has(r.row) ? false : sh.keep.has(r.row) ? true : !r.duplicateOf };
+    });
+  }
+
+  async function loadSheetFile(file) {
+    try {
+      startSheet(await P.readSpreadsheet(file), file.name);
+    } catch (e) {
+      toast(`Couldn't read that spreadsheet (${e.message})`);
+    }
+  }
+
+  function startSheet(rows, fileName) {
+    if (!rows || rows.length < 2) return toast('No rows found. Make sure the headings are in the first row');
+    state.sheet = { fileName, rows, map: SH.guessMapping(rows[0].map(String)), overrides: {}, skip: new Set(), keep: new Set() };
+    if (route().name !== 'import') location.hash = '#/import'; else render();
+  }
+
+  function viewSheetImport() {
+    const sh = state.sheet;
+    const head = `<div class="row small" style="margin-bottom:10px"><a href="#/inbox">← Add from a file</a></div>
+      <div class="page-head"><div><h1>📊 Import a spreadsheet</h1><div class="muted">Bring in your existing list in one go. It's read on this device and nothing is uploaded.</div></div></div>`;
+    if (!sh) {
+      return `${head}
+        <div class="grid grid-2">
+          <div class="card"><h2>${isTouch ? '📱 From the Google Sheets app' : '✂️ Copy and paste (quickest)'}</h2>
+            <ol class="small" style="line-height:1.8;padding-left:18px">
+              <li>Open your sheet${isTouch ? ' in the <b>Google Sheets</b> app' : ''}.</li>
+              <li>${isTouch ? 'Tap the top-left corner square (above row 1, left of column A) to select everything.' : 'Click any cell and press <b>Ctrl+A</b> (Cmd+A on a Mac) to select everything.'}</li>
+              <li>${isTouch ? 'Tap <b>Copy</b>.' : 'Press <b>Ctrl+C</b> (Cmd+C).'}</li>
+              <li>${isTouch ? 'Come back here, long-press the box below and tap <b>Paste</b>.' : 'Click the box below and press <b>Ctrl+V</b> (Cmd+V).'}</li></ol>
+            <textarea id="sheet-paste" style="min-height:120px" placeholder="Paste your spreadsheet here, including the heading row…"></textarea>
+            <div class="row" style="margin-top:8px"><button class="btn primary" data-act="sheet-paste">Read spreadsheet</button></div>
+          </div>
+          <div class="card"><h2>📁 Or use a file</h2>
+            <p class="small">In Google Sheets: <b>File → Download → Comma-separated values (.csv)</b>${isTouch ? '. In the phone app: ⋮ → <b>Share &amp; export → Save as → CSV</b> (or Excel)' : ''}. Excel (.xlsx) files work too.</p>
+            <label class="btn primary">Choose spreadsheet file<input type="file" accept=".csv,.tsv,.xlsx,text/csv" hidden data-act="sheet-file"></label>
+            <p class="muted small" style="margin-top:14px">💡 The first row should be the headings (e.g. <i>Item, Provider, Frequency, Renewal Date…</i>). Any headings work, and you can match them up on the next screen.</p>
+            ${state.people.length ? '' : '<p class="small banner info" style="margin-top:10px">👪 Tip: <a href="#/people">add your household</a> first. Then items like "Sam\'s mobile" are tagged to the right person automatically.</p>'}
+          </div>
+        </div>`;
+    }
+    const results = sheetResults();
+    const chosen = results.filter((r) => r.include).length;
+    const people = [['', 'Household / shared'], ...state.people.map((p) => [p.id, p.name])];
+    const freqLabel = (f) => (C.FREQUENCIES.find((x) => x.id === f) || {}).label || '';
+    return `${head}
+      <details class="card" style="margin-bottom:16px" ${sh.map.includes('ignore') || state.sheetMapOpen ? 'open' : ''} data-sheet-map>
+        <summary style="cursor:pointer"><span class="row" style="display:inline-flex"><b>1. Match your columns</b> <span class="muted small">${esc(sh.fileName)} · ${sh.rows.length - 1} rows${sh.map.includes('ignore') ? '' : ' · ✅ all matched'}</span></span></summary>
+        <div class="form-grid" style="margin-top:12px">${sh.rows[0].map((h, i) => `<label class="f">“${esc(h || `Column ${i + 1}`)}” is…<select data-sheet-col="${i}">${SH.TARGETS.map(([v, l]) => `<option value="${v}" ${sh.map[i] === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`).join('')}</div>
+      </details>
+      <div class="card">
+        <div class="row" style="margin-bottom:6px"><h2 style="margin:0">2. Check the items</h2><span class="spacer"></span><span class="small"><b>${chosen}</b> of ${results.length} selected</span></div>
+        <p class="muted small" style="margin-top:0">The type and person are guessed from each item's name. Change any that are wrong. You can edit everything else after importing.</p>
+        <div class="sheet-rows">${results.map((r) => {
+          const it = r.item, cat = C.category(it.category);
+          const bits = [it.provider, it.cost !== '' ? `${money(it.cost)} ${freqLabel(it.frequency).toLowerCase()}` : '', it.endDate ? `${cat.endLabel.toLowerCase()} ${C.formatDate(it.endDate)}` : 'no date', it.paymentDay ? `paid on day ${it.paymentDay}` : ''].filter(Boolean);
+          return `<div class="sheet-row ${r.include ? '' : 'off'}">
+            <input type="checkbox" data-sheet-include="${r.row}" ${r.include ? 'checked' : ''} aria-label="Import ${esc(it.name)}" style="width:auto">
+            <span class="ic">${cat.icon}</span>
+            <div class="t"><b>${esc(it.name)}</b><span class="muted small">${esc(bits.join(' · '))}</span>${r.duplicateOf ? '<span class="pill amber" style="margin-top:4px">Already in the app, so unticked</span>' : ''}${it.notes ? `<span class="muted small">📝 ${esc(it.notes.split('\n')[0])}</span>` : ''}</div>
+            <select data-sheet-cat="${r.row}" aria-label="Type">${categoryOptions(it.category)}</select>
+            <select data-sheet-owner="${r.row}" aria-label="Belongs to">${people.map(([v, l]) => `<option value="${esc(v)}" ${v === it.ownerId ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+          </div>`;
+        }).join('') || '<div class="empty">No items found. Check that one column is set to "Item name".</div>'}</div>
+        <div class="modal-foot"><button class="btn" data-act="sheet-reset">Start again</button><button class="btn primary" data-act="sheet-import" ${chosen ? '' : 'disabled'}>Import ${chosen} item${chosen === 1 ? '' : 's'}</button></div>
+      </div>`;
+  }
+
+  async function importSheet() {
+    const chosen = sheetResults().filter((r) => r.include);
+    if (!chosen.length) return;
+    const name = state.sheet.fileName;
+    for (const r of chosen) {
+      await saveItem(C.newItem({ ...r.item, history: [{ date: C.today(), text: `Imported from spreadsheet “${name}” (row ${r.row})` }] }));
+    }
+    state.sheet = null; state.sheetMapOpen = false;
+    state.filters = { ...state.filters, group: 'all', person: 'all', status: 'active', q: '', sort: 'date' };
+    toast(`Imported ${chosen.length} item${chosen.length === 1 ? '' : 's'}`);
+    location.hash = '#/items';
   }
 
   /* ================= PEOPLE ================= */
@@ -2338,7 +2715,7 @@ body.locked main { max-width: none; }
         </div>
         <div class="card"><h2>💾 Backup & restore</h2>
           <p class="muted small">Your data is stored only in this browser on this device. Clearing browsing data, uninstalling the app or using a different browser means starting empty. A backup file contains everything, documents included, and is <b>protected with a password</b> you choose.</p>
-          <div class="row"><button class="btn primary" data-act="export-json">${isTouch ? '📤 Save backup (Drive, email…)' : '⬇︎ Download backup'}</button><label class="btn">⬆︎ Restore from backup<input type="file" accept=".json,application/json" hidden data-act="import-json"></label><button class="btn" data-act="export-csv" title="Not encrypted">⬇︎ Spreadsheet (CSV)</button></div>
+          <div class="row"><button class="btn primary" data-act="export-json">${isTouch ? '📤 Save backup (Drive, email…)' : '⬇︎ Download backup'}</button><label class="btn">⬆︎ Restore from backup<input type="file" accept=".json,application/json" hidden data-act="import-json"></label><button class="btn" data-act="export-csv" title="Not encrypted">⬇︎ Spreadsheet (CSV)</button><a class="btn" href="#/import">📊 Import a spreadsheet</a></div>
           <p class="small muted">${s.lastBackup ? `Last backup: ${esc(C.formatDate(s.lastBackup))}` : 'No backup made yet.'}</p>
           <div id="storage-info" class="small muted"></div>
         </div>
@@ -2650,6 +3027,13 @@ body.locked main { max-width: none; }
       closeModal(); render();
     },
     'export-json': openBackupDialog,
+    'sheet-paste': () => {
+      const text = $('#sheet-paste').value;
+      if (!text.trim()) return toast('Paste your spreadsheet into the box first');
+      startSheet(SH.parseDelimited(text), 'Pasted spreadsheet');
+    },
+    'sheet-reset': () => { state.sheet = null; state.sheetMapOpen = false; render(); },
+    'sheet-import': importSheet,
     'lock-now': () => lockNow(),
     'lock-setup': openLockSetup,
     'lock-change': openLockChange,
@@ -2709,6 +3093,19 @@ body.locked main { max-width: none; }
       return;
     }
     if (el.matches('[data-act=import-json]') && el.files[0]) return importJSON(el.files[0]);
+    if (el.matches('[data-act=sheet-file]') && el.files[0]) return loadSheetFile(el.files[0]);
+    if (el.matches('[data-sheet-col]')) { state.sheet.map[Number(el.dataset.sheetCol)] = el.value; state.sheetMapOpen = true; keepScroll(render); return; }
+    if (el.matches('[data-sheet-include]')) {
+      const row = Number(el.dataset.sheetInclude);
+      state.sheet.skip.delete(row); state.sheet.keep.delete(row);
+      (el.checked ? state.sheet.keep : state.sheet.skip).add(row);
+      keepScroll(render); return;
+    }
+    if (el.matches('[data-sheet-cat], [data-sheet-owner]')) {
+      const row = Number(el.dataset.sheetCat || el.dataset.sheetOwner);
+      state.sheet.overrides[row] = { ...state.sheet.overrides[row], [el.dataset.sheetCat ? 'category' : 'ownerId']: el.value };
+      keepScroll(render); return;
+    }
     if (el.matches('[data-autolock]')) { state.settings.autoLockMinutes = Number(el.value); await DB.setSetting('autoLockMinutes', state.settings.autoLockMinutes); toast('Saved'); return; }
     if (el.matches('[data-filter]')) { state.filters[el.dataset.filter] = el.value; render(); return; }
     if (el.matches('[data-import-form] select[name=targetId]')) {
@@ -2825,6 +3222,7 @@ body.locked main { max-width: none; }
         loadedShares.add(row.id);
         for (const f of row.files || []) {
           const file = f.blob instanceof File ? f.blob : new File([f.blob], f.name, { type: f.type });
+          if (P.isSpreadsheet(file)) { await loadSheetFile(file); await DB.del('shared', row.id); return; }
           await addImport({ file, sharedId: row.id });
         }
         if (row.text && !(row.files || []).length) await addImport({ text: row.text, fileName: 'Shared text', sharedId: row.id });
@@ -2906,7 +3304,7 @@ body.locked main { max-width: none; }
     if (!lock.record) return;
     DB.setCipher(null);
     lock.unlocked = false;
-    state.items = []; state.people = []; state.files = new Map(); state.imports = []; state.pasteDraft = '';
+    state.items = []; state.people = []; state.files = new Map(); state.imports = []; state.pasteDraft = ''; state.sheet = null;
     closeModal();
     render();
   }
