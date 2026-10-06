@@ -266,3 +266,4 @@ body.locked main { max-width: none; }
   .sheet-row { grid-template-columns: auto 28px minmax(0, 1fr); }
   .sheet-row select { grid-column: 3; }
 }
+.paste-card { margin-bottom: 14px; background: var(--accent-bg); border-color: transparent; }

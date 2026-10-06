@@ -276,6 +276,7 @@ body.locked main { max-width: none; }
   .sheet-row { grid-template-columns: auto 28px minmax(0, 1fr); }
   .sheet-row select { grid-column: 3; }
 }
+.paste-card { margin-bottom: 14px; background: var(--accent-bg); border-color: transparent; }
 </style>
 </head>
 <body>
@@ -2092,7 +2093,7 @@ body.locked main { max-width: none; }
 
     return `
       <div class="page-head"><div><h1>${greet}</h1><div class="muted">${esc(C.formatDate(today))} · ${act.length} active item${act.length === 1 ? '' : 's'}</div></div>
-        <div class="row">${lock.record ? '<button class="btn" data-act="lock-now" title="Lock now" aria-label="Lock now">🔒</button>' : ''}<a class="btn" href="#/inbox">📥 Add from file</a><button class="btn primary" data-act="new-item">＋ Add</button></div></div>
+        <div class="row">${lock.record ? '<button class="btn" data-act="lock-now" title="Lock now" aria-label="Lock now">🔒</button>' : ''}<button class="btn" data-act="paste-clipboard" title="Read a copied email">📋 Paste email</button><a class="btn" href="#/inbox">📥 Add from file</a><button class="btn primary" data-act="new-item">＋ Add</button></div></div>
       ${banners}
       ${state.items.length ? `
       <div class="stats">
@@ -2406,6 +2407,8 @@ body.locked main { max-width: none; }
   /* ================= INBOX / IMPORT ================= */
   function viewInbox() {
     return `<div class="page-head"><div><h1>Add from a file</h1><div class="muted">Drop emails, PDFs or documents. The details are read on this device and nothing is uploaded.</div></div><a class="btn" href="#/import">📊 Import a spreadsheet</a></div>
+      ${state.imports.length ? `<div id="imports">${state.imports.map(importCardHTML).join('')}</div><h2 style="margin:24px 0 12px">Add something else</h2>` : ''}
+      <div class="card paste-card"><div class="row"><div style="flex:1;min-width:200px"><b>📋 Copied an email?</b><div class="muted small">In Gmail: long-press the email's text → <b>Select all</b> → <b>Copy</b>. Then tap here.</div></div><button class="btn primary" data-act="paste-clipboard">Paste email</button></div></div>
       <div class="dropzone" data-dropitem="">
         <div class="big">📥</div>
         <h2 style="margin:6px 0">${isTouch ? 'Pick a file, or share one to this app' : 'Drag & drop here, or anywhere on the page'}</h2>
@@ -2422,7 +2425,7 @@ body.locked main { max-width: none; }
         <li><b>Outlook.com / Apple Mail:</b> <i>Save as / Download</i> gives you .eml. In Apple Mail you can drag the message straight to Finder.</li>
         <li><b>PDF attachments:</b> download and drop them in. PDFs attached inside a .eml are read automatically.</li>
         <li><b>Anything else:</b> select the text in the email and drag it onto this page, or paste it above.</li></ul></details>
-      <div id="imports">${state.imports.map(importCardHTML).join('')}</div>`;
+`;
   }
 
   function findMatch(res) {
@@ -2996,6 +2999,25 @@ body.locked main { max-width: none; }
       it.fileIds = (it.fileIds || []).filter((x) => x !== el.dataset.id);
       await DB.del('files', el.dataset.id); state.files.delete(el.dataset.id);
       await saveItem(it); render();
+    },
+    // One tap: read what's on the clipboard. If the browser won't allow it, fall back to the paste box.
+    'paste-clipboard': async () => {
+      let text = '';
+      try { text = await navigator.clipboard.readText(); } catch { /* permission refused or unsupported */ }
+      if (text.trim().length < 20) {
+        if (route().name !== 'inbox') location.hash = '#/inbox';
+        setTimeout(() => {
+          const box = $('#paste-text');
+          if (!box) return;
+          box.closest('details').open = true;
+          box.focus();
+          box.scrollIntoView({ block: 'center' });
+        }, 50);
+        return toast(text.trim() ? "That doesn't look like an email. Copy the whole email first" : 'Long-press the box and tap Paste');
+      }
+      await addImport({ text, fileName: 'Pasted email' });
+      if (route().name !== 'inbox') location.hash = '#/inbox'; else render();
+      toast('Check the details and save');
     },
     'paste-extract': async () => {
       const text = $('#paste-text').value;
