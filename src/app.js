@@ -41,8 +41,10 @@
     t.textContent = msg;
     t.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
+    // Longer messages (usually problems) stay a little longer
+    toastTimer = setTimeout(() => t.classList.remove('show'), Math.min(6000, 2600 + msg.length * 40));
   }
+  document.getElementById('toast').addEventListener('click', (e) => { clearTimeout(toastTimer); e.currentTarget.classList.remove('show'); });
 
   function dueBadge(iso) {
     if (!iso) return '<span class="pill grey">No date</span>';
