@@ -4,11 +4,11 @@ import '../src/core.js';
 import '../src/extract.js';
 
 const { PAExtract: X, PACore: C } = globalThis;
-const people = [{ id: 'rob', name: 'Rob Tait', phone: '07700 900123' }, { id: 'sarah', name: 'Sarah Tait', phone: '07700 900456' }];
+const people = [{ id: 'alex', name: 'Alex Morgan', phone: '07700 900123' }, { id: 'sam', name: 'Sam Morgan', phone: '07700 900456' }];
 
 test('car insurance renewal email', () => {
   const r = X.extract(`Your Admiral car insurance renewal
-Dear Mr Rob Tait,
+Dear Mr Alex Morgan,
 Policy number: P12345678
 Vehicle: AB12CDE Ford Focus
 Your policy renews on 14 March 2027.
@@ -24,7 +24,7 @@ Your policy will automatically renew.`, {}, people);
   assert.equal(r.fields.frequency, 'annually');
   assert.equal(r.fields.previousCost, 412.5);
   assert.equal(r.fields.reference, 'P12345678');
-  assert.equal(r.fields.ownerId, 'rob');
+  assert.equal(r.fields.ownerId, 'alex');
   assert.equal(r.fields.autoRenew, 'yes');
   assert.equal(r.extra.vehicleReg, 'AB12 CDE');
   assert.equal(r.extra.noClaimsYears, '5');
@@ -38,9 +38,9 @@ test('mobile contract matched to the person by phone number', () => {
   assert.equal(r.fields.endDate, '2026-11-02');
   assert.equal(r.fields.cost, 38);
   assert.equal(r.fields.frequency, 'monthly');
-  assert.equal(r.fields.ownerId, 'sarah');
+  assert.equal(r.fields.ownerId, 'sam');
   assert.equal(r.extra.phoneNumber, '07700 900456');
-  assert.match(r.fields.name, /^Sarah's mobile/);
+  assert.match(r.fields.name, /^Sam's mobile/);
 });
 
 test('credit card rates, limit and promo', () => {
@@ -69,7 +69,7 @@ test('TV licence and council tax', () => {
 });
 
 test('email body wins over an attached document', () => {
-  const r = X.extract('Hi Sarah, your mobile contract ends on 2 November 2026, £38 a month.\n--- Attachment: other.pdf ---\nHome insurance renewal date 1 December 2026. Premium £312.40 per year. Policy number AH-998877.', { from: 'EE <x@ee.co.uk>' }, people);
+  const r = X.extract('Hi Sam, your mobile contract ends on 2 November 2026, £38 a month.\n--- Attachment: other.pdf ---\nHome insurance renewal date 1 December 2026. Premium £312.40 per year. Policy number AH-998877.', { from: 'EE <x@ee.co.uk>' }, people);
   assert.equal(r.fields.category, 'mobile');
   assert.equal(r.fields.endDate, '2026-11-02');
   assert.equal(r.fields.cost, 38);
